@@ -27,3 +27,15 @@ As long as we control each component of this loop , we can build Agents systemat
 
 
 
+A generalized Python library for building 12-factor compliant agents, designed to handle tool execution, human interactions, and state management with a modular and extensible architecture.
+
+## Features
+- **Tool Support**: Register and execute custom tools (e.g., calculator operations).
+- **Human Interaction**: Handle clarification requests and approvals via CLI or HTTP.
+- **Thread Management**: Maintain conversation state with JSON or XML serialization.
+- **Customizable Prompts**: Configure LLM prompts with reasoning steps.
+- **HTTP API**: Expose agent functionality via FastAPI endpoints.
+- **State Management**: In-memory thread store, extensible to databases.
+- **Structured Logging**: Comprehensive logging with `structlog` for debugging and monitoring.
+- **Statelessness**: Externalized state management for scalability.
+

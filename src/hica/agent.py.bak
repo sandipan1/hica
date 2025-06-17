@@ -1,0 +1,285 @@
+from typing import Dict, Generic, Literal, Optional, Type, TypeVar
+
+from instructor import AsyncInstructor
+from pydantic import BaseModel
+
+from hica.core import Event, Thread
+from hica.logging import logger
+from hica.models import ClarificationRequest, DoneForNow, DynamicToolCall
+from hica.tools import ToolRegistry, create_model_from_tool_schema
+
+T = TypeVar("T")
+
+
+class AgentConfig(BaseModel):
+    model: str = "gpt-4o"
+    system_prompt: str = (
+        "You are an autonomous agent. Your primary goal is to fulfill the user's request. "
+        "Carefully analyze the user's initial input and the results of any previous tool executions. "
+        "Based on this, select the appropriate tool(s) from the available list. "
+        "If the user's request has been fully addressed by the executed tools, you MUST respond with 'done'. "
+        "If you require further input or clarification from the user, you MUST respond with 'clarification'."
+    )
+    context_format: str = "json"
+
+
+class Agent(Generic[T]):
+    def __init__(
+        self,
+        client: AsyncInstructor,
+        config: AgentConfig,
+        tool_registry: Optional[ToolRegistry] = None,
+        metadata: Optional[Dict] = None,
+    ):
+        self.client = client
+        self.config = config
+        self.tool_registry = tool_registry or ToolRegistry()
+        self.response_model: Type[BaseModel] = DynamicToolCall
+        self.metadata = metadata or {}
+        logger.info(
+            "Agent initialized", config=config.model_dump(), metadata=self.metadata
+        )
+
+    def set_response_model(self, response_model: Type[BaseModel]):
+        self.response_model = response_model
+        logger.debug("Response model set", model=response_model.__name__)
+
+    def _format_tool_metadata(self) -> str:
+        """Format tool metadata in a clear, readable format."""
+        tools_str = ""
+        for intent, tool_def in self.tool_registry.tool_definitions.items():
+            tools_str += f"<tool> {tool_def.name} : {tool_def.description or 'No description'}</tool>\n"
+        return tools_str.rstrip()
+
+    async def determine_next_step(self, thread: Thread[T]) -> T:
+        tool_names = list(self.tool_registry.tool_definitions.keys())
+        # Include 'done' and 'clarification' as valid intents for the LLM to choose
+        valid_intents = tuple(tool_names) + ("done", "clarification")
+        ToolLiteral = Literal[valid_intents] if valid_intents else str
+
+        class ToolSelection(BaseModel):
+            intent: ToolLiteral
+
+        current_llm_response_model = ToolSelection
+
+        # Initial system prompt based on config
+        messages = [{"role": "system", "content": self.config.system_prompt}]
+
+        # Add available tools to the system prompt as part of the instructions
+        tool_metadata = self._format_tool_metadata()
+        if tool_metadata:
+            messages[0]["content"] += f"\nAvailable tools:\n{tool_metadata}"
+
+        # Add conversation history from thread events
+        for event in thread.events:
+            if event.type == "user_input":
+                messages.append({"role": "user", "content": event.data})
+            elif event.type == "llm_response":
+                # LLM's previous response for tool selection or parameter filling
+                if "intent" in event.data:
+                    if event.data["intent"] in ["done", "clarification"]:
+                        messages.append(
+                            {"role": "assistant", "content": event.data["intent"]}
+                        )
+                    else:
+                        # Assuming DynamicToolCall structure, extract intent and arguments
+                        tool_name = event.data["intent"]
+                        tool_args = event.data.get("arguments", {})
+                        # Represent the assistant's decision to call a tool
+                        messages.append(
+                            {
+                                "role": "assistant",
+                                "content": f"Selected tool ' {tool_name} ' with parameters: {tool_args}",
+                            }
+                        )
+                else:
+                    # Fallback for other LLM response types
+                    messages.append({"role": "assistant", "content": str(event.data)})
+            elif event.type == "tool_response":
+                # Tool responses are observations for the agent from the "user" perspective
+                # The tool_name might not be directly available here, so just use result
+                messages.append(
+                    {"role": "user", "content": f"Tool execution result: {event.data}"}
+                )
+            # Skip 'llm_prompt' and 'tool_call' as they are internal processing steps.
+
+        # Add the current instruction for the LLM to select a tool or done/clarification
+        messages.append(
+            {
+                "role": "user",
+                "content": "Based on the conversation and tool results, select the next tool (intent), or respond with 'done' if the task is complete, or 'clarification' if more information is needed. Respond ONLY with the intent name, 'done', or 'clarification'.",
+            }
+        )
+
+        logger.debug(
+            "Determining next step (LLM call)",
+            messages=messages,
+            response_model=current_llm_response_model.__name__,
+        )
+
+        response = await self.client.chat.completions.create(
+            model=self.config.model,
+            response_model=current_llm_response_model,  # Use the determined model
+            messages=messages,  # Use the correctly constructed messages list
+            temperature=0.0,
+        )
+
+        thread.append_event(Event(type="llm_response", data=response.model_dump()))
+        logger.info("LLM response received", response_type=response.__class__.__name__)
+
+        # If the response is a terminal state, return it immediately
+        if isinstance(response, (DoneForNow, ClarificationRequest)):
+            return response
+
+        # If it's ToolSelection, extract the intent and proceed
+        elif isinstance(response, ToolSelection):
+            selected_intent = response.intent
+            logger.info("Tool selected", intent=selected_intent)
+
+            # Handle DoneForNow and ClarificationRequest intents directly from ToolSelection
+            if selected_intent == "done":
+                return DoneForNow(message="Task completed by agent.")
+            elif selected_intent == "clarification":
+                return ClarificationRequest(message="Clarification needed from user.")
+
+            # Second LLM call: parameter filling (only if a real tool was selected)
+            tool_def = self.tool_registry.tool_definitions[selected_intent]
+            ToolParamsModel = create_model_from_tool_schema(tool_def)
+
+            # Construct messages for parameter filling LLM call
+            param_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert at extracting parameters for tools.\n"
+                        "Your task is to analyze the user's original request and the results of any previous tool executions to determine the correct parameters for the current tool.\n"
+                        "When the user specifies numbers directly in their request, use those numbers as parameters.\n"
+                        "When a previous tool execution result is mentioned (e.g., 'the result'), you MUST use the numerical value from the *most recent* 'tool_response' event in the conversation history as a parameter for the current tool.\n"
+                        "Focus on extracting numerical values or other required data from the conversation history and providing them in the correct format for the tool's schema."
+                    ),
+                }
+            ]
+            tool_metadata = self._format_tool_metadata()
+            if tool_metadata:
+                param_messages[0]["content"] += f"\nAvailable tools:\n{tool_metadata}"
+
+            for event in thread.events:
+                if event.type == "user_input":
+                    param_messages.append({"role": "user", "content": event.data})
+                elif event.type == "llm_response":
+                    if "intent" in event.data:
+                        if event.data["intent"] in ["done", "clarification"]:
+                            param_messages.append(
+                                {"role": "assistant", "content": event.data["intent"]}
+                            )
+                        else:
+                            tool_name = event.data["intent"]
+                            tool_args = event.data.get("arguments", {})
+                            param_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": f"Selected tool ' {tool_name} ' with parameters: {tool_args}",
+                                }
+                            )
+                    else:
+                        param_messages.append(
+                            {"role": "assistant", "content": str(event.data)}
+                        )
+                elif event.type == "tool_response":
+                    param_messages.append(
+                        {
+                            "role": "user",
+                            "content": f"Tool execution result: {event.data}",
+                        }
+                    )
+
+            # Add the specific instruction for parameter filling
+            param_messages.append(
+                {
+                    "role": "user",
+                    "content": f"You have selected the tool: {tool_def.name}.\nDescription: {tool_def.description}\nParameters schema:\n{tool_def.parameters_json_schema}\nConsidering the full conversation history and especially the *most recent tool execution result*, provide ONLY the required parameters as per the schema above. If the user's request implies using a previous result, use that result as an input for the current tool.",
+                }
+            )
+
+            param_response = await self.client.chat.completions.create(
+                model=self.config.model,
+                response_model=ToolParamsModel,
+                messages=param_messages,  # Use the correctly constructed messages list for parameter filling
+                temperature=0.0,
+            )
+            # Return a DynamicToolCall for compatibility with agent_loop
+            from hica.models import DynamicToolCall
+
+            # Construct arguments dictionary directly from the parameters_json_schema
+            # to avoid passing 'name' and 'description' or other unexpected fields
+            arguments_for_tool = {}
+            if "properties" in tool_def.parameters_json_schema:
+                for param_name, _ in tool_def.parameters_json_schema[
+                    "properties"
+                ].items():
+                    # Use getattr to safely get the attribute from the Pydantic response model
+                    if hasattr(param_response, param_name):
+                        arguments_for_tool[param_name] = getattr(
+                            param_response, param_name
+                        )
+
+            tool_call = DynamicToolCall(
+                intent=selected_intent,
+                arguments=arguments_for_tool,
+            )
+            thread.append_event(Event(type="llm_response", data=tool_call.model_dump()))
+            logger.info("Tool parameters filled", intent=selected_intent)
+            return tool_call
+        else:
+            logger.error(
+                "Unknown response type from LLM",
+                response_type=response.__class__.__name__,
+                response_data=response.model_dump(),
+            )
+            raise ValueError(
+                f"Unknown response type from LLM: {response.__class__.__name__}"
+            )
+
+    async def agent_loop(self, thread: Thread[T]) -> Thread[T]:
+        thread.metadata = self.metadata
+        logger.info(
+            "Starting agent loop", thread_id=id(thread), metadata=thread.metadata
+        )
+        while True:
+            next_step = await self.determine_next_step(thread)
+            logger.debug(
+                "Next step",
+                step=next_step.dict() if hasattr(next_step, "dict") else str(next_step),
+            )
+            thread.append_event(
+                Event(
+                    type="tool_call",
+                    data=next_step.dict() if hasattr(next_step, "dict") else {},
+                )
+            )
+            logger.debug(
+                "Event snapshot",
+                events=[e.dict() for e in thread.events[-3:]],
+                metadata=thread.metadata,
+            )
+            if isinstance(next_step, (DoneForNow, ClarificationRequest)):
+                logger.info(
+                    "Agent loop exiting: human interaction required",
+                    intent=getattr(next_step, "intent", None),
+                )
+                return thread
+            elif isinstance(next_step, DynamicToolCall):
+                logger.debug("Executing tool call", intent=next_step.intent)
+                result = await self.tool_registry.execute_tool(
+                    next_step.intent, next_step.arguments
+                )
+                thread.append_event(Event(type="tool_response", data=result))
+                logger.debug("Tool response recorded", result=result)
+            else:
+                logger.error(
+                    "Unknown intent", intent=getattr(next_step, "intent", None)
+                )
+                raise ValueError(
+                    f"Unknown intent: {getattr(next_step, 'intent', None)}"
+                )
+        return thread
