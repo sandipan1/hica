@@ -41,6 +41,12 @@ A generalized Python library for building 12-factor compliant agents, designed t
 
 # Usage
 **Example: Running an Agent with Calculator Tool**
+### Set Environment variables in .env 
+`OPENAI_API_KEY="your-api-key"`
+
+
+Run the Example:
+The main.py script processes a query (“Calculate 3 plus 4”) using the add tool from calculator_tool.py:
 
 
 ### src/main.py
@@ -75,3 +81,27 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+Run the script:
+`python main.py`
+
+
+
+### Output (in context/<thread_id>.json):
+```json
+{
+  "events": [
+    {"type": "user_input", "data": "Calculate 3 plus 4", "timestamp": "..."},
+    {"type": "llm_response", "data": {"intent": "add"}, "timestamp": "..."},
+    {"type": "llm_response", "data": {"intent": "add", "arguments": {"a": 3.0, "b": 4.0}}, "timestamp": "..."},
+    {"type": "tool_call", "data": {"intent": "add", "arguments": {"a": 3.0, "b": 4.0}}, "timestamp": "..."},
+    {"type": "tool_response", "data": 7.0, "timestamp": "..."},
+    {"type": "llm_response", "data": {"intent": "done"}, "timestamp": "..."},
+    {"type": "tool_call", "data": {"intent": "done", "message": "Task completed by agent."}, "timestamp": "..."}
+  ],
+  "metadata": {"userid": "1234", "role": "analyst"},
+  "version": 2
+}
+
+```
+
+
