@@ -2,7 +2,7 @@
 
 Move beyond agent frameworks to build production-ready AI systems.
 HICA gives you complete control over your AI agents' Thought , Action and Observation. This simplicity in-practice looks like a having complete control over prompts, context windows, tool execution, and control flow. Many existing libraries trade convenience over control for reliability—build agents that work in production.
-
+> ## TLDR: Give you visibility and control into every part of you Agent through Stateful Conversations, Human-in-the-Loop by Design, Structured Logging
 ## 🎯 Why HICA?
 
 Most agent frameworks are black boxes that work great for demos but fail in production or lock you in with certain vendors. You can't debug decisions, modify prompts, or handle edge cases , change your stack at will when you don't control the fundamentals.
@@ -11,7 +11,7 @@ HICA is built on four core principles:
 
 - **Control Your Prompts** - Own every instruction your agent receives
 - **Manage Context Windows** - Engineer context for maximum efficiency and reliability  
-- **Simplify Tools & Workflows** - Everything is a structured tool call that includes MCP 
+- **Simplify Tools & Workflows by Atomization** - Everything is a `Event` that includes user input, LLM call, tool call
 - **Own Control Flow** - Build custom execution patterns that fit your use case
 - **Observability & tool** - Build you are own observability flow by integrating with existing OpenTelemetry workflows or building your own
 
@@ -25,7 +25,7 @@ Agents work in a continuous cycle of: thinking (Thought) → acting (Act) and o
 These three components Thought-Action-Observation work in a continuous loop. When we are building an Agent , it might fail in one of these 3 steps .
 As long as we control each component of this loop , we can build Agents systematically and reliably.
 
-
+## 
 
 A generalized Python library for building 12-factor compliant agents, designed to handle tool execution, human interactions, and state management with a modular and extensible architecture.
 
@@ -52,7 +52,7 @@ The main.py script processes a query (“Calculate 3 plus 4”) using the add to
 ### src/main.py
 ```python
 import asyncio
-from instructor import AsyncInstructor
+import instructor
 from openai import AsyncOpenAI
 from hica.agent import Agent, AgentConfig
 from hica.core import Thread, Event
@@ -63,8 +63,15 @@ import structlog
 logger = structlog.get_logger()
 
 async def main():
-    client = AsyncInstructor.from_openai(AsyncOpenAI())
-    config = AgentConfig()
+    client = instructor.from_openai(AsyncOpenAI())
+    config = AgentConfig(
+        model="gpt-4.1-mini",
+        system_prompt=(
+            "You are an autonomous agent. Reason carefully to select tools based on their name, description, and parameters. "
+            "Analyze the user input, identify the required operation, and determine if clarification is needed."
+        ),
+        context_format="json",
+    )
     agent = Agent(
         client=client,
         config=config,
@@ -86,7 +93,7 @@ Run the script:
 
 
 
-### Output (in context/<thread_id>.json):
+### Event Output (in context/<thread_id>.json):
 ```json
 {
   "events": [
