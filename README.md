@@ -39,3 +39,39 @@ A generalized Python library for building 12-factor compliant agents, designed t
 - **Structured Logging**: Comprehensive logging with `structlog` for debugging and monitoring.
 - **Statelessness**: Externalized state management for scalability.
 
+# Usage
+**Example: Running an Agent with Calculator Tool**
+
+
+### src/main.py
+```python
+import asyncio
+from instructor import AsyncInstructor
+from openai import AsyncOpenAI
+from hica.agent import Agent, AgentConfig
+from hica.core import Thread, Event
+from hica.state import ThreadStore
+from example.calculator_tool import registry as calculator_registry
+import structlog
+
+logger = structlog.get_logger()
+
+async def main():
+    client = AsyncInstructor.from_openai(AsyncOpenAI())
+    config = AgentConfig()
+    agent = Agent(
+        client=client,
+        config=config,
+        tool_registry=calculator_registry,
+        metadata={"userid": "1234", "role": "analyst"}
+    )
+    thread = Thread(events=[Event(type="user_input", data="Calculate 3 plus 4")])
+    store = ThreadStore()
+    thread_id = store.create(thread)
+    updated_thread = await agent.agent_loop(thread)
+    store.update(thread_id, updated_thread)
+    logger.info("Thread state", thread_id=thread_id, events=[e.model_dump() for e in updated_thread.events])
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
