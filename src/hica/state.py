@@ -1,25 +1,28 @@
-import uuid
-from typing import Optional, List
-from .core import Thread
-from .logging import logger
-from pathlib import Path
 import os
-import json
+import uuid
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from .core import Event, Thread
+from .logging import logger
+
 
 class ThreadStore:
     def __init__(self, context_dir: str = "context"):
         self.threads: dict[str, Thread] = {}
-        self.versions: dict[str, List[Thread]] = {}
         self.context_dir = Path(os.getenv("HICA_CONTEXT_DIR", context_dir))
         self.context_dir.mkdir(parents=True, exist_ok=True)
         logger.info("ThreadStore initialized", context_dir=str(self.context_dir))
 
     def create(self, thread: Thread) -> str:
         thread_id = str(uuid.uuid4())
+        # Store the thread_id in the thread's metadata for resumability
+        if not thread.metadata:
+            thread.metadata = {}
+        thread.metadata["thread_id"] = thread_id
         self.threads[thread_id] = thread
-        self.versions[thread_id] = [thread.copy(deep=True)]
         self._save_to_file(thread_id, thread)
-        logger.info("Thread created", thread_id=thread_id, version=thread.version)
+        logger.info("Thread created", thread_id=thread_id)
         return thread_id
 
     def get(self, thread_id: str) -> Optional[Thread]:
@@ -31,27 +34,27 @@ class ThreadStore:
         # Load from file if not in cache
         thread = self._load_from_file(thread_id)
         if thread:
+            # Ensure thread_id is in metadata (for backward compatibility)
+            if not thread.metadata:
+                thread.metadata = {}
+            if "thread_id" not in thread.metadata:
+                thread.metadata["thread_id"] = thread_id
+
             self.threads[thread_id] = thread
-            self.versions[thread_id] = [thread.copy(deep=True)]
             logger.debug("Thread loaded from file", thread_id=thread_id)
         else:
             logger.warning("Thread not found", thread_id=thread_id)
         return thread
 
     def update(self, thread_id: str, thread: Thread):
-        self.threads[thread_id] = thread
-        self.versions[thread_id].append(thread.copy(deep=True))
-        self._save_to_file(thread_id, thread)
-        logger.debug("Thread updated", thread_id=thread_id, version=thread.version)
+        # Ensure thread_id is in metadata (for consistency)
+        if not thread.metadata:
+            thread.metadata = {}
+        thread.metadata["thread_id"] = thread_id
 
-    def get_version(self, thread_id: str, version: int) -> Optional[Thread]:
-        if thread_id in self.versions:
-            for t in self.versions[thread_id]:
-                if t.version == version:
-                    logger.debug("Thread version retrieved", thread_id=thread_id, version=version)
-                    return t
-        logger.warning("Thread version not found", thread_id=thread_id, version=version)
-        return None
+        self.threads[thread_id] = thread
+        self._save_to_file(thread_id, thread)
+        logger.debug("Thread updated", thread_id=thread_id)
 
     def _save_to_file(self, thread_id: str, thread: Thread):
         """Save Thread to a JSON file."""
@@ -59,9 +62,13 @@ class ThreadStore:
         try:
             with file_path.open("w") as f:
                 f.write(thread.to_json())
-            logger.debug("Thread saved to file", thread_id=thread_id, file_path=str(file_path))
+            logger.debug(
+                "Thread saved to file", thread_id=thread_id, file_path=str(file_path)
+            )
         except Exception as e:
-            logger.error("Failed to save Thread to file", thread_id=thread_id, error=str(e))
+            logger.error(
+                "Failed to save Thread to file", thread_id=thread_id, error=str(e)
+            )
             raise
 
     def _load_from_file(self, thread_id: str) -> Optional[Thread]:
@@ -75,5 +82,17 @@ class ThreadStore:
             thread = Thread.from_json(json_str)
             return thread
         except Exception as e:
-            logger.error("Failed to load Thread from file", thread_id=thread_id, error=str(e))
+            logger.error(
+                "Failed to load Thread from file", thread_id=thread_id, error=str(e)
+            )
             return None
+
+    # Convenience methods
+    def create_from_message(
+        self, message: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> tuple[str, Thread]:
+        thread = Thread(
+            events=[Event(type="user_input", data=message)], metadata=metadata or {}
+        )
+        thread_id = self.create(thread)
+        return thread_id, thread

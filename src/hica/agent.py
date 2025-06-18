@@ -40,7 +40,7 @@ class Agent(Generic[T]):
         self.tool_registry = tool_registry or ToolRegistry()
         self.response_model: Type[BaseModel] = DynamicToolCall
         self.metadata = metadata or {}
-        self._tool_metadata_cache: Optional[str] = None  # Cache for tool metadata
+        self._tool_metadata_cache: Optional[str] = None
         logger.info(
             "Agent initialized", config=config.model_dump(), metadata=self.metadata
         )
@@ -247,14 +247,16 @@ class Agent(Generic[T]):
         The loop continues until a DoneForNow or ClarificationRequest is received,
         executing tools and updating the thread with events.
         """
-        thread.metadata = self.metadata
+        thread.metadata.update(self.metadata)
+        thread_id = thread.metadata.get("thread_id", "unknown")
         logger.info(
-            "Starting agent loop", thread_id=id(thread), metadata=thread.metadata
+            "Starting agent loop", thread_id=thread_id, metadata=thread.metadata
         )
         while True:
             next_step = await self.determine_next_step(thread)
             logger.debug(
                 "Next step",
+                thread_id=thread_id,
                 step=next_step.model_dump()
                 if hasattr(next_step, "model_dump")
                 else str(next_step),

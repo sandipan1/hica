@@ -13,7 +13,6 @@ T = TypeVar("T")
 class Thread(BaseModel, Generic[T]):
     events: List[Event] = []
     metadata: Dict[str, Any] = {}
-    version: int = 0
 
     def serialize_for_llm(self, format: str = "json") -> str:
         """Serialize thread for LLM consumption, excluding redundant events."""
@@ -77,8 +76,7 @@ class Thread(BaseModel, Generic[T]):
 
     def append_event(self, event: Event) -> None:
         self.events.append(event)
-        self.version += 1
-        logger.debug("Event appended", version=self.version, event_type=event.type)
+        logger.debug("Event appended", event_type=event.type)
 
     async def summarize_context(self, max_events: int = 10) -> None:
         if len(self.events) <= max_events:
@@ -89,10 +87,8 @@ class Thread(BaseModel, Generic[T]):
             data="Summary of earlier interactions: user initiated conversation, performed calculations.",
         )
         self.events = [summary_event] + recent_events
-        self.version += 1
         logger.info(
             "Context summarized",
-            version=self.version,
             remaining_events=len(self.events),
         )
 

@@ -38,6 +38,7 @@ def create_app(agent: Agent[T], store: ThreadStore) -> FastAPI:
         logger.debug("Starting new thread", message=request.message)
         thread = Thread[T](events=[Event(type="user_input", data=request.message)])
         thread_id = store.create(thread)
+
         new_thread = await agent.agent_loop(thread)
         store.update(thread_id, new_thread)
         last_event = new_thread.events[-1]
