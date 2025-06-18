@@ -59,15 +59,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-## TODO think about resumability
-## TODO think about viewing it online - thread execution and observability are independent
-## you can beg LLM to take an action but you can also control how it operates with different conditions
-## Human approval can be done in a lot of differernt ways -
-##    1. LLM sampling or elicilation
-##    2. between tool selection and tool calling
-##    3. between tool parameter generation and tool execution
-##    4. between tool response and next step
-## TODO think about seperation of Agent and thread.
-## TODO version history is not needed - remove
-## TODO multiple threads for multiple agents.
