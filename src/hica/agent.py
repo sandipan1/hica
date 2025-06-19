@@ -10,6 +10,12 @@ from hica.tools import ToolRegistry, create_model_from_tool_schema
 
 T = TypeVar("T")
 
+logger.debug("this is a debug message")
+logger.info("this is an info message")
+logger.warning("this is a warning message")
+logger.error("this is an error message")
+logger.critical("this is a critical message")
+
 
 class AgentConfig(BaseModel):
     """Configuration for the autonomous agent."""
@@ -115,7 +121,7 @@ class Agent(Generic[T]):
         self, messages: List[Dict[str, str]], response_model: Type[BaseModel]
     ) -> BaseModel:
         """Execute an LLM call with the given messages and response model."""
-        logger.debug(
+        logger.info(
             "LLM call", messages=messages, response_model=response_model.__name__
         )
         try:
@@ -124,11 +130,6 @@ class Agent(Generic[T]):
                 response_model=response_model,
                 messages=messages,
                 temperature=0.0,
-            )
-            thread_data = (
-                response.model_dump()
-                if hasattr(response, "model_dump")
-                else str(response)
             )
             return response
         except Exception as e:
@@ -247,11 +248,15 @@ class Agent(Generic[T]):
         The loop continues until a DoneForNow or ClarificationRequest is received,
         executing tools and updating the thread with events.
         """
+
+        logger.debug("Debug message from agent_loop")
+        logger.info("Info message from agent_loop")
         thread.metadata.update(self.metadata)
         thread_id = thread.metadata.get("thread_id", "unknown")
         logger.info(
             "Starting agent loop", thread_id=thread_id, metadata=thread.metadata
         )
+
         while True:
             next_step = await self.determine_next_step(thread)
             logger.debug(
