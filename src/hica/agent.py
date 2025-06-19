@@ -5,16 +5,16 @@ from pydantic import BaseModel
 
 from hica.core import Event, Thread
 from hica.logging import logger
-from hica.models import ClarificationRequest, DoneForNow, DynamicToolCall, FinalResponse
+from hica.models import (
+    ClarificationRequest,
+    DoneForNow,
+    DynamicToolCall,
+    FinalResponse,
+    serialize_mcp_result,
+)
 from hica.tools import ToolRegistry, create_model_from_tool_schema
 
 T = TypeVar("T")
-
-logger.debug("this is a debug message")
-logger.info("this is an info message")
-logger.warning("this is a warning message")
-logger.error("this is an error message")
-logger.critical("this is a critical message")
 
 
 class AgentConfig(BaseModel):
@@ -60,7 +60,7 @@ class Agent(Generic[T]):
         """Format tool metadata for inclusion in LLM prompts."""
         if self._tool_metadata_cache is None:
             tools_str = ""
-            for intent, tool_def in self.tool_registry.tool_definitions.items():
+            for intent, tool_def in self.tool_registry.all_tool_defs.items():
                 tools_str += f"<tool> {tool_def.name} : {tool_def.description or 'No description'}</tool>\n"
             self._tool_metadata_cache = tools_str.rstrip()
         return self._tool_metadata_cache
@@ -138,7 +138,7 @@ class Agent(Generic[T]):
 
     async def _select_tool(self, thread: Thread[T]) -> BaseModel:
         """Select the next tool or terminal state using the LLM."""
-        valid_intents = tuple(self.tool_registry.tool_definitions.keys()) + (
+        valid_intents = tuple(self.tool_registry.all_tool_defs.keys()) + (
             "done",
             "clarification",
         )
@@ -165,7 +165,7 @@ class Agent(Generic[T]):
 
     async def _fill_parameters(self, thread: Thread[T], intent: str) -> DynamicToolCall:
         """Fill parameters for the selected tool using the LLM."""
-        tool_def = self.tool_registry.tool_definitions.get(intent)
+        tool_def = self.tool_registry.all_tool_defs.get(intent)
         if not tool_def:
             logger.error("Tool not found", intent=intent)
             raise ValueError(f"Tool {intent} not found")
@@ -294,6 +294,8 @@ class Agent(Generic[T]):
                 result = await self.tool_registry.execute_tool(
                     next_step.intent, next_step.arguments
                 )
+                # Serializes the output of an MCP tool call into a format suitable for storage in an Event.
+                result = serialize_mcp_result(result)
                 thread.append_event(Event(type="tool_response", data=result))
                 logger.debug("Tool response recorded", result=result)
             else:

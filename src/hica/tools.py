@@ -1,10 +1,11 @@
 import asyncio
-import functools
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
-from pydantic import BaseModel, Field, computed_field, create_model, validate_arguments
+from pydantic import BaseModel, Field, computed_field, create_model
 from pydantic_ai.tools import ToolDefinition
+
+from hica.logging import logger
 
 
 def create_model_from_tool_schema(tool_def: ToolDefinition) -> Type[BaseModel]:
@@ -95,10 +96,64 @@ def create_model_from_nested_schema(schema: Dict[str, Any]) -> type[BaseModel]:
     return create_model("NestedModel", **field_definitions)
 
 
+from fastmcp import Client
+
+
+class MCPConnectionManager:
+    def __init__(self, server_path_or_url):
+        self.client = Client(server_path_or_url)
+
+    async def connect(self):
+        """Establish connection to the MCP server"""
+        if not self.client.is_connected():
+            await self.client.__aenter__()
+
+    async def disconnect(self):
+        """Close connection to the MCP server"""
+        if self.client.is_connected():
+            await self.client.__aexit__(None, None, None)
+
+    async def call_tool(self, name, arguments=None):
+        """Call a tool on the MCP server"""
+        if not self.client.is_connected():
+            raise RuntimeError("Not connected. Call connect() first.")
+        return await self.client.call_tool(name, arguments)
+
+    async def list_tools(self):
+        """List all available tools on the MCP server"""
+        if not self.client.is_connected():
+            raise RuntimeError("Not connected. Call connect() first.")
+        return await self.client.list_tools()
+
+    async def list_resources(self):
+        """List all available resources on the MCP server"""
+        if not self.client.is_connected():
+            raise RuntimeError("Not connected. Call connect() first.")
+        return await self.client.list_resources()
+
+    async def read_resource(self, uri):
+        """Read a resource from the MCP server"""
+        if not self.client.is_connected():
+            raise RuntimeError("Not connected. Call connect() first.")
+        return await self.client.read_resource(uri)
+
+    async def ping(self):
+        """Ping the MCP server to verify connectivity"""
+        if not self.client.is_connected():
+            raise RuntimeError("Not connected. Call connect() first.")
+        return await self.client.ping()
+
+    def is_connected(self):
+        """Check if currently connected to the server"""
+        return self.client.is_connected()
+
+
 class ToolRegistry:
     def __init__(self):
-        self.tools: Dict[str, Callable] = {}
-        self.tool_definitions: Dict[str, ToolDefinition] = {}
+        self.local_tools: Dict[str, Callable] = {}
+        self.local_tool_defs: Dict[str, ToolDefinition] = {}
+        self.mcp_tools: Dict[str, Tuple[MCPConnectionManager, ToolDefinition]] = {}
+        self.all_tool_defs: Dict[str, ToolDefinition] = {}
 
     def tool(self, intent: Optional[str] = None):
         def decorator(func: Callable):
@@ -127,23 +182,47 @@ class ToolRegistry:
                     "required": required,
                 },
             )
-            self.tool_definitions[tool_intent] = tool_def
-
-            @validate_arguments
-            @functools.wraps(func)
-            async def wrapper(**kwargs):
-                if asyncio.iscoroutinefunction(func):
-                    return await func(**kwargs)
-                else:
-                    return func(**kwargs)
-
-            self.tools[tool_intent] = wrapper
+            self.local_tools[tool_intent] = func
+            self.local_tool_defs[tool_intent] = tool_def
+            self.all_tool_defs[tool_intent] = tool_def
             return func
 
         return decorator
 
-    async def execute_tool(self, intent: str, arguments: dict) -> Any:
-        if intent not in self.tools:
-            raise ValueError(f"No tool registered for intent: {intent}")
-        tool_func = self.tools[intent]
-        return await tool_func(**arguments)
+    async def load_mcp_tools(self, mcp_manager: "MCPConnectionManager"):
+        """Fetch tool definitions from an MCP server and register them."""
+        tools = await mcp_manager.list_tools()
+        for tool in tools:
+            tool_def = ToolDefinition(
+                name=tool.name,
+                description=tool.description,
+                parameters_json_schema=tool.inputSchema,
+            )
+            self.mcp_tools[tool.name] = (mcp_manager, tool_def)
+            self.all_tool_defs[tool.name] = tool_def
+
+    def get_tool_definitions(self):
+        """Return all tool definitions (local + MCP)."""
+        return self.all_tool_defs
+
+    async def execute_tool(self, name: str, arguments: dict) -> Any:
+        if name in self.local_tools:
+            logger.info(
+                f"Executing LOCAL tool: {name}",
+                extra={"tool_type": "local", "arguments": arguments},
+            )
+            func = self.local_tools[name]
+            if asyncio.iscoroutinefunction(func):
+                return await func(**arguments)
+            else:
+                return func(**arguments)
+        elif name in self.mcp_tools:
+            logger.info(
+                f"Executing MCP tool: {name}",
+                extra={"tool_type": "mcp", "arguments": arguments},
+            )
+            mcp_manager, _ = self.mcp_tools[name]
+            return await mcp_manager.call_tool(name, arguments)
+        else:
+            logger.error(f"Tool {name} not found in registry.")
+            raise ValueError(f"Tool {name} not found")
