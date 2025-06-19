@@ -111,4 +111,61 @@ Run the script:
 
 ```
 
+### 🚀  MCP (Model Context Protocol) Tool Integration
+HICA now supports seamless integration with FastMCP and other MCP-compatible tool servers.
+You can register and invoke both local Python tools and remote MCP tools in a unified agent workflow.
+
+**Key Benefits**
+- Unified Tool Registry: Register local and remote (MCP) tools together.
+- Dynamic Tool Loading: Load tool definitions from any MCP server at runtime.
+- LLM-Orchestrated Tool Use: The agent can reason about and call both local and MCP tools in the same workflow.
+- Robust Serialization: All tool results (including complex MCP content types) are normalized for logging, storage, and downstream use.
+
+### Register MCP tools and run the Agent 
+```python
+# MCP server config
+registry = ToolRegistry()
+mcp_config = {
+    "mcpServers": {
+        "sqlite": {
+            "command": "uvx",
+            "args": ["mcp-server-sqlite", "--db-path", "db.sqlite"],
+        }
+    }
+}
+ # Optionally, register local tools as well
+@registry.tool()
+def add(a: int, b: int) -> int:
+    return a + b
+
+mcp_manager = MCPConnectionManager(mcp_config)
+
+
+async def main():
+    await conn.connect()
+    await registry.load_mcp_tools(mcp_manager)
+    agent = Agent(
+        client=...,  # your LLM client
+        config=AgentConfig(
+            model="gpt-4.1-mini",
+            system_prompt="You are an autonomous agent. Reason carefully to select tools based on their name, description, and parameters.",
+            context_format="json",
+        ),
+        tool_registry=registry,
+        metadata={"userid": "1234", "role": "analyst"}
+    )
+    thread = Thread(events=[Event(type="user_input", data="List all tables in the database")])
+    store = ThreadStore()
+    thread_id = store.create(thread)
+    updated_thread = await agent.agent_loop(thread)
+    store.update(thread_id, updated_thread)
+    print("Thread state:", [e.model_dump() for e in updated_thread.events])
+
+    await mcp_manager.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+Check out the complete example on `/example/main_mcp_tool.py`
+
 
