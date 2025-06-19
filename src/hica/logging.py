@@ -5,7 +5,7 @@ from typing import Any, Dict
 
 import structlog
 
-os.environ["HICA_LOG_LEVEL"] = "INFO"
+os.environ["HICA_LOG_LEVEL"] = "DEBUG"
 # Global registry for thread-specific loggers
 _thread_loggers = {}
 
