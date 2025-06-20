@@ -16,7 +16,7 @@ HICA is built on four core principles:
 - **Observability & tool** - Build you are own observability flow by integrating with existing OpenTelemetry workflows or building your own
 
 ## Agentic Workflow
-Agents work in a continuous cycle of: thinking (Thought) → acting (Act) and observing (Observe).
+Agents work in a continuous cycle of: thinking (Thought) → acting (Act) and observing (Observe).
 
 **Thought**: The LLM part of the Agent decides what the next step should be.
 **Action**: The agent takes an action, by calling the tools with the associated arguments.
@@ -46,7 +46,7 @@ A generalized Python library for building 12-factor compliant agents, designed t
 
 
 Run the Example:
-The main.py script processes a query (“Calculate 3 plus 4”) using the add tool from calculator_tool.py:
+The main.py script processes a query ("Calculate 3 plus 4") using the add tool from calculator_tool.py:
 
 
 ### src/main.py
@@ -168,4 +168,9 @@ if __name__ == "__main__":
 ```
 Check out the complete example on `/example/main_mcp_tool.py`
 
+## 🤝 Contributing
 
+We welcome contributions from the community! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to report issues, submit pull requests, and get involved.
+
+
+Feel free to email me if you have questions or suggestions:
