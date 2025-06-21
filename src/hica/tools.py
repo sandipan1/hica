@@ -2,47 +2,34 @@ import asyncio
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
-from pydantic import BaseModel, Field, computed_field, create_model
+from pydantic import BaseModel, Field, create_model
 from pydantic_ai.tools import ToolDefinition
 
 from hica.logging import logger
 
 
 def create_model_from_tool_schema(tool_def: ToolDefinition) -> Type[BaseModel]:
-    """Create a Pydantic model from a tool definition's parameters JSON schema."""
-    schema = tool_def.parameters_json_schema
-    model_name = f"{tool_def.name}"
-
-    properties = schema.get("properties", {})
-    required = schema.get("required", [])
-
-    field_definitions: Dict[str, Tuple[Type, Field]] = {}
-    for field_name, field_schema in properties.items():
-        field_type = _get_python_type_from_schema(field_schema)
-        is_required = field_name in required
-
-        description = field_schema.get("description", "")
-
-        if is_required:
-            field_definitions[field_name] = (field_type, Field(description=description))
-        else:
-            field_definitions[field_name] = (
-                Optional[field_type],
-                Field(None, description=description),
-            )
-
-    # Create a base class with the computed fields
-    class BaseToolModel(BaseModel):
-        @computed_field
-        def name(self) -> str:
-            return tool_def.name
-
-        @computed_field
-        def description(self) -> str:
-            return tool_def.description
-
-    # Create the final model by inheriting from the base class
-    return create_model(model_name, __base__=BaseToolModel, **field_definitions)
+    """Dynamically create a Pydantic model from a tool's parameter schema."""
+    model_name = tool_def.name.replace(" ", "_")
+    field_definitions = {}
+    for param, schema in tool_def.parameters_json_schema.get("properties", {}).items():
+        # Use type annotation from schema if possible, else default to Any
+        annotation = Any
+        if schema.get("type") == "integer":
+            annotation = int
+        elif schema.get("type") == "number":
+            annotation = float
+        elif schema.get("type") == "string":
+            annotation = str
+        elif schema.get("type") == "boolean":
+            annotation = bool
+        elif schema.get("type") == "array":
+            annotation = list
+        elif schema.get("type") == "object":
+            annotation = dict
+        field_definitions[param] = (annotation, ...)
+    # Use BaseModel instead of BaseToolModel to avoid field conflicts
+    return create_model(model_name, __base__=BaseModel, **field_definitions)
 
 
 def _get_python_type_from_schema(schema: Dict[str, Any]) -> type:
@@ -155,39 +142,79 @@ class ToolRegistry:
         self.mcp_tools: Dict[str, Tuple[MCPConnectionManager, ToolDefinition]] = {}
         self.all_tool_defs: Dict[str, ToolDefinition] = {}
 
+    def _register_local_tool(self, func: Callable, intent: Optional[str] = None):
+        """A private helper to register a local Python function as a tool."""
+        tool_intent = intent or func.__name__
+        if tool_intent in self.local_tools:
+            logger.warning(f"Tool '{tool_intent}' is already registered. Overwriting.")
+
+        signature = inspect.signature(func)
+        properties = {}
+        required = []
+
+        type_map = {
+            int: "integer",
+            float: "number",
+            str: "string",
+            bool: "boolean",
+            list: "array",
+            dict: "object",
+        }
+
+        for param_name, param in signature.parameters.items():
+            param_type = param.annotation
+            json_type = "string"  # Default if type is not recognized
+            if param_type in type_map:
+                json_type = type_map[param_type]
+
+            param_schema = {"type": json_type}
+            if param.default != inspect.Parameter.empty:
+                param_schema["default"] = param.default
+            else:
+                required.append(param_name)
+
+            properties[param_name] = param_schema
+
+        tool_def = ToolDefinition(
+            name=func.__name__,
+            description=func.__doc__ or "",
+            parameters_json_schema={
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        )
+        self.local_tools[tool_intent] = func
+        self.local_tool_defs[tool_intent] = tool_def
+        self.all_tool_defs[tool_intent] = tool_def
+        logger.info(f"Registered local tool: {tool_intent}")
+
     def tool(self, intent: Optional[str] = None):
+        """A decorator to register a Python function as a tool."""
+
         def decorator(func: Callable):
-            tool_intent = intent or func.__name__
-            signature = inspect.signature(func)
-            properties = {}
-            required = []
-            for param_name, param in signature.parameters.items():
-                param_type = (
-                    param.annotation.__name__
-                    if param.annotation != inspect.Parameter.empty
-                    else "string"
-                )
-                param_schema = {"type": param_type}
-                if param.default != inspect.Parameter.empty:
-                    param_schema["default"] = param.default
-                properties[param_name] = param_schema
-                if param.default == inspect.Parameter.empty:
-                    required.append(param_name)
-            tool_def = ToolDefinition(
-                name=func.__name__,
-                description=func.__doc__ or None,
-                parameters_json_schema={
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
-            )
-            self.local_tools[tool_intent] = func
-            self.local_tool_defs[tool_intent] = tool_def
-            self.all_tool_defs[tool_intent] = tool_def
+            self._register_local_tool(func, intent)
             return func
 
         return decorator
+
+    def add_tool(self, func: Callable, intent: Optional[str] = None):
+        """Programmatically adds a local Python function as a tool."""
+        self._register_local_tool(func, intent)
+
+    def remove_tool(self, name: str):
+        """Removes a tool (local or MCP) from the registry by its name."""
+        if name in self.local_tools:
+            del self.local_tools[name]
+            del self.local_tool_defs[name]
+            del self.all_tool_defs[name]
+            logger.info(f"Removed local tool: {name}")
+        elif name in self.mcp_tools:
+            del self.mcp_tools[name]
+            del self.all_tool_defs[name]
+            logger.info(f"Removed MCP tool: {name}")
+        else:
+            logger.warning(f"Attempted to remove tool '{name}' which was not found.")
 
     async def load_mcp_tools(self, mcp_manager: "MCPConnectionManager"):
         """Fetch tool definitions from an MCP server and register them."""

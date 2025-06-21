@@ -54,7 +54,7 @@ class Thread(BaseModel, Generic[T]):
         last_event = self.events[-1]
         return (
             isinstance(last_event.data, dict)
-            and last_event.data.get("intent") == "request_clarification"
+            and last_event.data.get("intent") == "clarification"
         )
 
     def awaiting_human_approval(self) -> bool:

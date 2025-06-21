@@ -33,25 +33,52 @@ def serialize_mcp_result(result: Any) -> dict | str | float | int | list | None:
     """
     if result is None:
         return None
-    if isinstance(result, list):
-        return [serialize_mcp_result(item) for item in result]
-    if hasattr(result, "text"):
-        try:
-            return json.loads(result.text)
-        except Exception:
-            return result.text
-    if hasattr(result, "data"):
-        # If it has a mime_type, treat as image/audio/file
-        if hasattr(result, "mime_type"):
-            return {
-                "mime_type": getattr(result, "mime_type", None),
-                "data": base64.b64encode(result.data).decode("utf-8"),
-            }
-        return base64.b64encode(result.data).decode("utf-8")
+
+    # Handle Pydantic Models first
     if hasattr(result, "model_dump"):
         return result.model_dump()
+
+    # Handle lists recursively
+    if isinstance(result, list):
+        return [serialize_mcp_result(item) for item in result]
+
+    # Handle FastMCP content types
+    # from fastmcp.utilities.types import Image, Audio, File
+    # Based on the reference code, we expect objects with specific structures
+
+    # Handle Image/Audio content (dict with mime_type and data)
+    if isinstance(result, dict) and "mime_type" in result and "data" in result:
+        data_to_encode = result["data"]
+        if isinstance(data_to_encode, str):
+            # It might already be base64 encoded string, but let's assume it's raw string data
+            data_to_encode = data_to_encode.encode("utf-8")
+        if isinstance(data_to_encode, bytes):
+            encoded_data = base64.b64encode(data_to_encode).decode("utf-8")
+            return {"mime_type": result["mime_type"], "data": encoded_data}
+
+    # Handle generic objects with .data attribute (like EmbeddedResource)
+    if hasattr(result, "data"):
+        data_to_encode = result.data
+        if isinstance(data_to_encode, str):
+            data_to_encode = data_to_encode.encode("utf-8")
+        if isinstance(data_to_encode, bytes):
+            return base64.b64encode(data_to_encode).decode("utf-8")
+        return data_to_encode  # return as is if not bytes or string
+
+    # Handle TextContent
+    if hasattr(result, "text"):
+        try:
+            # Try to parse as JSON if it's a string representation of JSON
+            return json.loads(result.text)
+        except (json.JSONDecodeError, TypeError):
+            # Otherwise, return the raw text
+            return result.text
+
+    # Handle primitive types
     if isinstance(result, (dict, str, float, int)):
         return result
+
+    # Fallback for any other type
     return str(result)
 
 

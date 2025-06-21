@@ -1,6 +1,6 @@
 from typing import Dict, Generic, List, Literal, Optional, Type, TypeVar
 
-from instructor import AsyncInstructor
+import instructor
 from pydantic import BaseModel
 
 from hica.core import Event, Thread
@@ -20,7 +20,7 @@ T = TypeVar("T")
 class AgentConfig(BaseModel):
     """Configuration for the autonomous agent."""
 
-    model: str = "gpt-4o"
+    model: str = "openai/gpt-4.1-mini"
     system_prompt: str = (
         "You are an autonomous agent. Your primary goal is to fulfill the user's request. "
         "Carefully analyze the user's initial input and the results of any previous tool executions. "
@@ -36,12 +36,10 @@ class Agent(Generic[T]):
 
     def __init__(
         self,
-        client: AsyncInstructor,
         config: AgentConfig,
         tool_registry: Optional[ToolRegistry] = None,
         metadata: Optional[Dict[str, any]] = None,
     ):
-        self.client = client
         self.config = config
         self.tool_registry = tool_registry or ToolRegistry()
         self.response_model: Type[BaseModel] = DynamicToolCall
@@ -50,6 +48,7 @@ class Agent(Generic[T]):
         logger.info(
             "Agent initialized", config=config.model_dump(), metadata=self.metadata
         )
+        self.client = instructor.from_provider(self.config.model, async_client=True)
 
     def set_response_model(self, response_model: Type[BaseModel]) -> None:
         """Set the response model for LLM calls."""
@@ -126,7 +125,6 @@ class Agent(Generic[T]):
         )
         try:
             response = await self.client.chat.completions.create(
-                model=self.config.model,
                 response_model=response_model,
                 messages=messages,
                 temperature=0.0,
@@ -146,6 +144,7 @@ class Agent(Generic[T]):
 
         class ToolSelection(BaseModel):
             intent: ToolLiteral
+            reason: str
 
         instruction = (
             "Based on the conversation and tool results, select the next tool (intent), "
@@ -160,7 +159,9 @@ class Agent(Generic[T]):
         if response.intent == "done":
             return DoneForNow(message="Task completed by agent.")
         if response.intent == "clarification":
-            return ClarificationRequest(message="Clarification needed from user.")
+            return ClarificationRequest(
+                message=f"Clarification needed for : {response.reason}"
+            )
         return response
 
     async def _fill_parameters(self, thread: Thread[T], intent: str) -> DynamicToolCall:
@@ -251,7 +252,8 @@ class Agent(Generic[T]):
 
         logger.debug("Debug message from agent_loop")
         logger.info("Info message from agent_loop")
-        thread.metadata.update(self.metadata)
+        for k, v in self.metadata.items():
+            thread.metadata.setdefault(k, v)
         thread_id = thread.metadata.get("thread_id", "unknown")
         logger.info(
             "Starting agent loop", thread_id=thread_id, metadata=thread.metadata
@@ -296,7 +298,9 @@ class Agent(Generic[T]):
                 )
                 # Serializes the output of an MCP tool call into a format suitable for storage in an Event.
                 result = serialize_mcp_result(result)
-                thread.append_event(Event(type="tool_response", data=result))
+                thread.append_event(
+                    Event(type="tool_response", data={"response": result})
+                )
                 logger.debug("Tool response recorded", result=result)
             else:
                 logger.error(
