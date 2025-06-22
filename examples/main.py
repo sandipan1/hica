@@ -33,7 +33,7 @@ async def main():
         events=[
             Event(
                 type="user_input",
-                data="Calculate 153 minus 3 and then divide the result ",
+                data="Calculate 153 minus 3 and then divide the result with.. ",
             )
         ],
     )
@@ -44,12 +44,15 @@ async def main():
     logger = get_thread_logger(thread_id, metadata)
 
     logger.info("Starting new thread", user_input=thread.events[0].data)
-    updated_thread = await agent.agent_loop(thread)
-    store.update(thread_id, updated_thread)
+    # We loop through the generator to run it to completion.
+    # The `thread` object itself is updated, so we don't need to capture the yielded values.
+    async for _ in agent.agent_loop(thread):
+        pass
+    store.update(thread_id, thread)
 
     logger.info(
         "Thread completed",
-        events=[e.dict() for e in updated_thread.events],
+        events=[e.dict() for e in thread.events],
     )
 
 
@@ -81,14 +84,15 @@ async def resume_thread(thread_id: str):
     )
     thread.append_event(clarification_event)
     agent = Agent(config=config, tool_registry=calculator_registry)
-    updated_thread = await agent.agent_loop(thread)
-    store.update(thread_id, updated_thread)
+    async for _ in agent.agent_loop(thread):
+        pass
+    store.update(thread_id, thread)
     logger.info(
         "Thread completed",
-        events=[e.dict() for e in updated_thread.events],
+        events=[e.dict() for e in thread.events],
     )
 
 
 if __name__ == "__main__":
-    # asyncio.run(resume_thread(thread_id="dad58eee-2da8-4b3a-999d-5ffbca7bc8c7"))
+    # asyncio.run(resume_thread(thread_id="2556e708-15ec-498b-a8ec-11865eebb9e2"))
     asyncio.run(main())

@@ -51,7 +51,8 @@ class ThreadStore:
         if not thread.metadata:
             thread.metadata = {}
         thread.metadata["thread_id"] = thread_id
-
+        thread.metadata['awaiting_human_response'] = thread.awaiting_human_response()
+        # Update in-memory']
         self.threads[thread_id] = thread
         self._save_to_file(thread_id, thread)
         logger.debug("Thread updated", thread_id=thread_id)

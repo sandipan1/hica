@@ -1,4 +1,4 @@
-from typing import Dict, Generic, List, Literal, Optional, Type, TypeVar
+from typing import AsyncGenerator, Dict, Generic, List, Literal, Optional, Type, TypeVar
 
 import instructor
 from pydantic import BaseModel
@@ -220,92 +220,51 @@ class Agent(Generic[T]):
             message=response.message, summary=response.summary, raw_results=tool_results
         )
 
-    async def determine_next_step(self, thread: Thread[T]) -> T:
-        """Determine the next step for the agent based on the thread state.
-
-        This method orchestrates tool selection and parameter filling using two LLM calls:
-        1. Selects a tool or terminal state (done/clarification).
-        2. Fills parameters for the selected tool, if applicable.
+    async def agent_loop(self, thread: Thread[T]) -> AsyncGenerator[Thread, None]:
         """
-        if not thread.events:
-            logger.warning("Thread has no events; initializing with empty user input")
-            thread.append_event(Event(type="user_input", data=""))
-
-        # Step 1: Select tool or terminal state
-        selection = await self._select_tool(thread)
-
-        # Step 2: Handle tool selection or return terminal state
-        if isinstance(selection, (DoneForNow, ClarificationRequest)):
-            return selection
-        if isinstance(selection, DynamicToolCall):
-            return selection
-
-        # Step 3: Fill parameters for the selected tool
-        return await self._fill_parameters(thread, selection.intent)
-
-    async def agent_loop(self, thread: Thread[T]) -> Thread[T]:
-        """Run the agent loop to process the thread until completion or clarification.
+        Run the agent loop to process the thread until completion or clarification.
 
         The loop continues until a DoneForNow or ClarificationRequest is received,
-        executing tools and updating the thread with events.
+        executing tools and updating the thread with events. This is an async generator
+        that yields the thread state after each significant step.
         """
-
-        logger.debug("Debug message from agent_loop")
-        logger.info("Info message from agent_loop")
-        for k, v in self.metadata.items():
-            thread.metadata.setdefault(k, v)
-        thread_id = thread.metadata.get("thread_id", "unknown")
         logger.info(
-            "Starting agent loop", thread_id=thread_id, metadata=thread.metadata
+            "Starting agent loop",
+            thread_id=thread.metadata.get("thread_id", "unknown"),
         )
+        yield thread  # Yield initial state
 
         while True:
-            next_step = await self.determine_next_step(thread)
-            logger.debug(
-                "Next step",
-                thread_id=thread_id,
-                step=next_step.model_dump()
-                if hasattr(next_step, "model_dump")
-                else str(next_step),
-            )
-            thread.append_event(
-                Event(
-                    type="tool_call",
-                    data=next_step.model_dump()
-                    if hasattr(next_step, "model_dump")
-                    else {},
-                )
-            )
+            # Step 1: Select tool or terminal state
+            selection = await self._select_tool(thread)
+            yield thread  # Yield after tool selection
 
-            if isinstance(next_step, DoneForNow):
-                # Generate final response when task is done
+            # Step 2: Handle terminal states
+            if isinstance(selection, DoneForNow):
                 final_response = await self._generate_final_response(thread)
                 thread.append_event(
                     Event(type="llm_response", data=final_response.model_dump())
                 )
                 logger.info("Final response generated", response=final_response.message)
-                return thread
-            elif isinstance(next_step, ClarificationRequest):
-                logger.info(
-                    "Agent loop exiting: clarification needed",
-                    intent=next_step.intent,
-                )
-                return thread
-            elif isinstance(next_step, DynamicToolCall):
-                logger.debug("Executing tool call", intent=next_step.intent)
-                result = await self.tool_registry.execute_tool(
-                    next_step.intent, next_step.arguments
-                )
-                # Serializes the output of an MCP tool call into a format suitable for storage in an Event.
-                result = serialize_mcp_result(result)
-                thread.append_event(
-                    Event(type="tool_response", data={"response": result})
-                )
-                logger.debug("Tool response recorded", result=result)
-            else:
-                logger.error(
-                    "Unknown intent", intent=getattr(next_step, "intent", None)
-                )
-                raise ValueError(
-                    f"Unknown intent: {getattr(next_step, 'intent', None)}"
-                )
+                yield thread
+                return  # End of loop
+
+            if isinstance(selection, ClarificationRequest):
+                logger.info("Agent loop exiting: clarification needed")
+                yield thread
+                return  # End of loop
+
+            # Step 3: Fill parameters for the selected tool
+            tool_call = await self._fill_parameters(thread, selection.intent)
+            thread.append_event(Event(type="tool_call", data=tool_call.model_dump()))
+            yield thread  # Yield after params are filled and tool_call is formulated
+
+            # Step 4: Execute the tool
+            logger.debug("Executing tool call", intent=tool_call.intent)
+            result = await self.tool_registry.execute_tool(
+                tool_call.intent, tool_call.arguments
+            )
+            result = serialize_mcp_result(result)
+            thread.append_event(Event(type="tool_response", data={"response": result}))
+            logger.debug("Tool response recorded", result=result)
+            yield thread  # Yield after tool execution

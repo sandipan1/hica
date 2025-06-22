@@ -1,7 +1,8 @@
 import time
-
 import requests
 import streamlit as st
+import os
+from streamlit_autorefresh import st_autorefresh
 
 # API base URL
 API_BASE_URL = "http://localhost:8000"
@@ -17,6 +18,8 @@ if "status" not in st.session_state:
     st.session_state.status = None
 if "tools_list" not in st.session_state:
     st.session_state.tools_list = None
+if "last_event_index" not in st.session_state:
+    st.session_state.last_event_index = 0
 
 # Set page configuration
 st.set_page_config(
@@ -24,6 +27,29 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# --- Efficient polling every 2 seconds (2000 ms) ---
+def poll_new_events():
+    thread_id = st.session_state.thread_id
+    if not thread_id:
+        return
+    since = st.session_state.last_event_index
+    try:
+        response = requests.get(f"{API_BASE_URL}/threads/{thread_id}/events", params={"since": since})
+        response.raise_for_status()
+        data = response.json()
+        new_events = data["events"]
+        if new_events:
+            st.session_state.events.extend(new_events)
+            st.session_state.last_event_index += len(new_events)
+    except Exception as e:
+        st.warning(f"Could not fetch new events: {e}")
+
+# --- Conditional autorefresh: only while job is not completed ---
+if st.session_state.status not in ("completed", "failed"):
+    
+    st_autorefresh(interval=2000, key="polling")
+    poll_new_events()
 
 
 def load_tools():
@@ -42,7 +68,22 @@ def load_tools():
 load_tools()
 
 
-# Function to create a new thread and poll for events
+def fetch_context_file(thread_id):
+    """
+    Fetch the context file for the given thread_id from the backend.
+    """
+    url = f"{API_BASE_URL}/threads/{thread_id}/context-file"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        # The response is a JSON file
+        return response.json()
+    except Exception as e:
+        st.warning(f"Could not fetch context file: {e}")
+        return None
+
+
+# Function to create a new thread
 def create_thread(user_input, metadata=None):
     try:
         response = requests.post(
@@ -58,12 +99,13 @@ def create_thread(user_input, metadata=None):
         # Immediately show the first event and thread ID
         st.session_state.events = data.get("events", [])
         st.session_state.status = data.get("status", "pending")
+        st.session_state.last_event_index = len(st.session_state.events)  # Reset index
         st.rerun()
     except requests.RequestException as e:
         st.error(f"Error creating thread: {e}")
 
 
-# Function to resume a thread and poll for events
+# Function to resume a thread
 def resume_thread(thread_id, user_input):
     try:
         response = requests.post(
@@ -72,70 +114,17 @@ def resume_thread(thread_id, user_input):
         )
         response.raise_for_status()
         data = response.json()
-        st.session_state.events = data["events"]
+        # Do not overwrite events here; let polling fetch new events
         st.session_state.awaiting_human_response = data["awaiting_human_response"]
         st.session_state.status = data["status"]
+        st.session_state.last_event_index = len(st.session_state.events)  # Keep current index
         st.success("Thread resumed successfully")
-
-        # Poll for updated events
-        poll_events(thread_id)
+        st.rerun()
     except requests.RequestException as e:
         st.error(f"Error resuming thread: {e}")
 
 
-# Function to poll for updated events
-def poll_events(thread_id, max_attempts=10, delay=1):
-    # This function is now primarily called via the "Refresh" button
-    # or after a resume action. The main real-time feel comes from
-    # the create_thread -> rerun flow.
-    attempt = 0
-    with st.spinner("Agent is working..."):
-        while attempt < max_attempts:
-            try:
-                response = requests.get(f"{API_BASE_URL}/threads/{thread_id}")
-                response.raise_for_status()
-                data = response.json()
-                new_events = data["events"]
-                current_event_count = len(st.session_state.get("events", []))
-
-                if len(new_events) > current_event_count:
-                    st.session_state.events = new_events
-                    st.session_state.awaiting_human_response = data.get(
-                        "awaiting_human_response", False
-                    )
-                    st.session_state.status = data.get("status", "in_progress")
-                    st.rerun()  # Refresh the UI with new events
-
-                # Stop polling if the process is complete or needs input
-                if data.get("status") == "completed" or data.get(
-                    "awaiting_human_response"
-                ):
-                    st.session_state.status = data.get("status", "completed")
-                    st.rerun()
-                    break
-
-                time.sleep(delay)
-                attempt += 1
-            except requests.RequestException:
-                st.toast("Failed to get status from server.", icon="⚠️")
-                break
-
-
-# Function to fetch events directly from API
-def fetch_thread(thread_id):
-    try:
-        response = requests.get(f"{API_BASE_URL}/threads/{thread_id}")
-        response.raise_for_status()
-        data = response.json()
-        st.session_state.events = data["events"]
-        st.session_state.awaiting_human_response = data["awaiting_human_response"]
-        st.session_state.status = data["status"]
-        st.success("Thread events loaded successfully")
-    except requests.RequestException as e:
-        st.error(f"Error fetching thread: {e}")
-
-
-# Streamlit UI
+# --- UI ---
 st.title("Agentic Workflow Chat")
 
 # Sidebar for thread management
@@ -147,9 +136,7 @@ with st.sidebar:
     if st.button("Load Thread"):
         if thread_id_input:
             st.session_state.thread_id = thread_id_input
-            fetch_thread(thread_id_input)
-            # After loading, immediately start polling for live updates
-            poll_events(thread_id_input)
+            # No need to call fetch_thread or poll_events, context file will be fetched below
 
     # List all available tools from session state
     st.header("Available Tools")
@@ -163,91 +150,97 @@ with st.sidebar:
 st.header("Thread Conversation")
 if st.session_state.thread_id:
     st.write(f"**Thread ID**: {st.session_state.thread_id}")
-    st.write(f"**Status**: {st.session_state.status}")
-    st.write(
-        f"**Awaiting Response**: {st.session_state.get('awaiting_human_response', False)}"
-    )
+    # Fetch context file for this thread
+    context_data = fetch_context_file(st.session_state.thread_id)
+    if context_data:
+        st.session_state.events = context_data.get("events", [])
+        st.session_state.status = context_data.get("status")
+        st.session_state.awaiting_human_response = context_data.get("awaiting_human_response", False)
+        st.write(f"**Status**: {st.session_state.status}")
+        st.write(f"**Awaiting Response**: {st.session_state.awaiting_human_response}")
 
-    # Display all events in a chat-like format
-    for event in st.session_state.get("events", []):
-        event_type = event.get("type")
-        event_data = event.get("data")
-        if event_type == "user_input":
-            with st.chat_message("user", avatar="👤"):
-                st.markdown(f"{event_data}")
-        elif event_type in [
-            "llm_response",
-            "tool_call",
-            "tool_response",
-            "final_response",
-        ]:
-            with st.chat_message("assistant", avatar="🤖"):
-                # Special handling for image in tool_response
-                if (
-                    event_type == "tool_response"
-                    and isinstance(event_data, dict)
-                    and isinstance(event_data.get("response"), dict)
-                    and event_data.get("response", {})
-                    .get("mime_type", "")
-                    .startswith("image/")
-                ):
-                    import base64
+        # Display all events in a chat-like format
+        for event in st.session_state.get("events", []):
+            event_type = event.get("type")
+            event_data = event.get("data")
+            if event_type == "user_input":
+                with st.chat_message("user", avatar="👤"):
+                    st.markdown(f"{event_data}")
+            elif event_type in [
+                "llm_response",
+                "tool_call",
+                "tool_response",
+                "final_response",
+            ]:
+                with st.chat_message("assistant", avatar="🤖"):
+                    # Special handling for image in tool_response
+                    if (
+                        event_type == "tool_response"
+                        and isinstance(event_data, dict)
+                        and isinstance(event_data.get("response"), dict)
+                        and event_data.get("response", {})
+                        .get("mime_type", "")
+                        .startswith("image/")
+                    ):
+                        import base64
 
-                    response_content = event_data["response"]
-                    st.image(
-                        base64.b64decode(response_content["data"]),
-                        caption=f"Image from tool ({response_content.get('mime_type')})",
-                    )
-                elif isinstance(event_data, dict):
-                    # Always show intent and event type
-                    intent = event_data.get("intent", "N/A")
-                    # Show message/data if present and not None/empty
-                    message = event_data.get("message")
-                    # If message is None or empty, show empty string
-                    message_str = message if message not in (None, "None") else ""
-                    st.markdown(
-                        f"""
-                        <div style='
-                            background-color: rgba(79, 142, 247, 0.08);
-                            border-radius: 8px;
-                            padding: 10px 16px;
-                            margin-bottom: 8px;
-                            border-left: 5px solid #4F8EF7;
-                        '>
-                            <span style='
-                                display: inline-block;
-                                background: #4F8EF7;
-                                color: #fff;
-                                border-radius: 4px;
-                                padding: 2px 8px;
-                                font-size: 0.85em;
-                                margin-right: 8px;
-                            '>{event_type.upper()}</span>
-                            <span style='
-                                display: inline-block;
-                                background: rgba(79, 142, 247, 0.18);
-                                color: #fff;
-                                border-radius: 4px;
-                                padding: 2px 8px;
-                                font-size: 0.85em;
-                                margin-right: 8px;
-                            '>{intent.upper()}</span>
-                            <span style='font-size: 1.05em; margin-left: 8px; color: inherit;'>{message_str}</span>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    # Show additional fields if present (excluding intent and message)
-                    extra_keys = [
-                        k for k in event_data.keys() if k not in ("message", "intent")
-                    ]
-                    if extra_keys:
-                        extra_data = {k: event_data[k] for k in extra_keys}
-                        st.json(extra_data)
-                else:
-                    # For non-dict data, just show as plain text
-                    if event_data not in (None, "None"):
-                        st.markdown(f"{event_data}")
+                        response_content = event_data["response"]
+                        st.image(
+                            base64.b64decode(response_content["data"]),
+                            caption=f"Image from tool ({response_content.get('mime_type')})",
+                        )
+                    elif isinstance(event_data, dict):
+                        # Always show intent and event type
+                        intent = event_data.get("intent", "N/A")
+                        # Show message/data if present and not None/empty
+                        message = event_data.get("message")
+                        # If message is None or empty, show empty string
+                        message_str = message if message not in (None, "None") else ""
+                        st.markdown(
+                            f"""
+                            <div style='
+                                background-color: rgba(79, 142, 247, 0.08);
+                                border-radius: 8px;
+                                padding: 10px 16px;
+                                margin-bottom: 8px;
+                                border-left: 5px solid #4F8EF7;
+                            '>
+                                <span style='
+                                    display: inline-block;
+                                    background: #0d439e;
+                                    color: #fff;
+                                    border-radius: 4px;
+                                    padding: 2px 8px;
+                                    font-size: 0.85em;
+                                    margin-right: 8px;
+                                '>{event_type.upper()}</span>
+                                <span style='
+                                    display: inline-block;
+                                    background: #4F8EF7;
+                                    color: #fff;
+                                    border-radius: 4px;
+                                    padding: 2px 8px;
+                                    font-size: 0.85em;
+                                    margin-right: 8px;
+                                '>{intent.upper()}</span>
+                                <span style='font-size: 1.05em; margin-left: 8px; color: inherit;'>{message_str}</span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        # Show additional fields if present (excluding intent and message)
+                        extra_keys = [
+                            k for k in event_data.keys() if k not in ("message", "intent")
+                        ]
+                        if extra_keys:
+                            extra_data = {k: event_data[k] for k in extra_keys}
+                            st.json(extra_data)
+                    else:
+                        # For non-dict data, just show as plain text
+                        if event_data not in (None, "None"):
+                            st.markdown(f"{event_data}")
+    else:
+        st.info("No events found for this thread.")
 else:
     st.write("No thread selected. Enter a message to start a new thread.")
 
@@ -263,11 +256,6 @@ if st.button("Send"):
             resume_thread(st.session_state.thread_id, user_input)
         else:
             create_thread(user_input)
-
-# Refresh button
-if st.session_state.thread_id:
-    if st.button("Refresh"):
-        fetch_thread(st.session_state.thread_id)
 
 # Add custom CSS for better styling
 st.markdown(
@@ -291,3 +279,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+if st.button("Refresh"):
+    st.rerun()

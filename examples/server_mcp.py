@@ -111,14 +111,17 @@ async def process_thread(thread: Thread, thread_id: str, metadata: Dict) -> Thre
         tool_registry=global_registry,  # Use the pre-initialized global registry
         metadata=metadata,
     )
-    updated_thread = await agent.agent_loop(thread)
-    store.update(thread_id, updated_thread)
-
+    async for intermediate_thread in agent.agent_loop(thread):
+        store.update(thread_id, intermediate_thread)
+        logger.debug(
+            "Intermediate state saved",
+            event_count=len(intermediate_thread.events),
+        )
     logger.info(
         "Thread completed",
-        events=[e.dict() for e in updated_thread.events],
+        events=[e.dict() for e in thread.events],
     )
-    return updated_thread
+    return thread
 
 
 @app.post("/threads", response_model=ThreadResponse)
@@ -203,36 +206,27 @@ async def get_thread(thread_id: UUID):
 
 
 @app.get("/threads/{thread_id}/context-file", response_class=FileResponse)
-async def get_thread_context_file(thread_id: UUID, background_tasks: BackgroundTasks):
-    """Download the thread's context as a JSON file."""
-    thread = store.get(str(thread_id))
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
+async def get_thread_context_file(thread_id: UUID):
+    """Download the thread's context as a JSON file from disk."""
+    file_path = store.context_dir / f"{thread_id}.json"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Context file not found")
 
-    # Prepare context data
-    context_data = {
-        "thread_id": str(thread_id),
-        "events": [e.dict() for e in thread.events],
-        "status": "completed"
-        if not thread.awaiting_human_response()
-        else "awaiting_response",
-        "awaiting_human_response": thread.awaiting_human_response(),
-    }
-
-    # Create temporary file
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False
-    ) as temp_file:
-        json.dump(context_data, temp_file, indent=2)
-        temp_file_path = temp_file.name
-
-    # Return file as response
-    background_tasks.add_task(os.remove, temp_file_path)
     return FileResponse(
-        path=temp_file_path,
+        path=str(file_path),
         filename=f"context_{str(thread_id)}.json",
         media_type="application/json",
     )
+
+
+@app.get("/threads/{thread_id}/events")
+async def get_new_events(thread_id: UUID, since: int = 0):
+    """Return only new events since a given index."""
+    thread = store.get(str(thread_id))
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    events = [e.dict() for e in thread.events[since:]]
+    return {"events": events, "total": len(thread.events)}
 
 
 @app.get("/tools")
@@ -271,3 +265,6 @@ curl http://localhost:8000/tools
 
 
 """
+
+## Don't create seperate metadata for user and thread
+## check if temporary file is neccessary -

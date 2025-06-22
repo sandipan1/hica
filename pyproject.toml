@@ -1,6 +1,6 @@
 [project]
 name = "hica"
-version = "0.2.0"
+version = "0.3.0"
 description = "Highly Customizable Agent Library for maximal visibility and control for your Agentic workflows"
 authors = [{ name = "Sandipan Haldar", email = "work@sandipanhaldar.com" }]
 license = { text = "MIT" }
@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
     "instructor",
     "pydantic",
+    "pydantic_ai",
     "fastapi",
     "uvicorn",
     "python-dotenv",
@@ -25,7 +26,10 @@ test = [
 examples = [
     "streamlit",
     "requests",
+    "streamlit-autorefresh"
 ]
+all=["hica[examples]",
+    "hica[test]"]
 
 [project.scripts]
 hica = "hica.cli:run_cli"
