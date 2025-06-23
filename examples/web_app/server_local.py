@@ -1,12 +1,7 @@
-import json
-import os
-import tempfile
 from typing import Dict, List, Optional
 from uuid import UUID
 
-from calculator_tools import (
-    registry,  # Predefined ToolRegistry
-)
+from calculator_tools import registry  # Predefined ToolRegistry
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -15,10 +10,17 @@ from pydantic import BaseModel
 from hica import Agent, AgentConfig, ThreadStore
 from hica.core import Event, Thread
 from hica.logging import get_thread_logger
+from hica.tools import ToolRegistry
 
 load_dotenv()
 
-app = FastAPI(title="Agentic Workflow API")
+app = FastAPI(title="Agentic Workflow API (Local Tools Only)")
+
+# --- Global registry for local tools only ---
+global_registry = ToolRegistry()
+# Load all local tools from calculator_tools.registry
+for intent, tool_callable in registry.local_tools.items():
+    global_registry.tool(intent=intent)(tool_callable)
 
 
 # Request and response models
@@ -38,7 +40,7 @@ class ThreadResponse(BaseModel):
     awaiting_human_response: bool
 
 
-# Agent configuration (same as in main.py)
+# Agent configuration
 agent_config = AgentConfig(
     model="openai/gpt-4.1-mini",
     system_prompt=(
@@ -53,58 +55,51 @@ store = ThreadStore()
 
 
 async def process_thread(thread: Thread, thread_id: str, metadata: Dict) -> Thread:
-    """Run the agent loop for a thread."""
+    """Run the agent loop for a thread using the global local tool registry."""
     logger = get_thread_logger(thread_id, metadata)
     logger.info("Processing thread", user_input=thread.events[-1].data)
-    # conn = MCPConnectionManager(
-    #     "/Users/sandipan/projects/AI/hica/examples/calculator_mcp_tools.py"
-    # )
     agent = Agent(
         config=agent_config,
-        tool_registry=registry,  # Use predefined registry
+        tool_registry=global_registry,
         metadata=metadata,
     )
-    updated_thread = await agent.agent_loop(thread)
-    store.update(thread_id, updated_thread)
+    async for intermediate_thread in agent.agent_loop(thread):
+        store.update(thread_id, intermediate_thread)
+        logger.debug(
+            "Intermediate state saved",
+            event_count=len(intermediate_thread.events),
+        )
     logger.info(
         "Thread completed",
-        events=[e.dict() for e in updated_thread.events],
+        events=[e.dict() for e in thread.events],
     )
-    return updated_thread
+    return thread
 
 
 @app.post("/threads", response_model=ThreadResponse)
-async def create_thread(request: CreateThreadRequest):
+async def create_thread(
+    request: CreateThreadRequest, background_tasks: BackgroundTasks
+):
     """Create a new thread with user input."""
     metadata = request.metadata or {"userid": "default", "role": "user"}
-
-    # Create thread
     thread = Thread(
-        events=[
-            Event(
-                type="user_input",
-                data=request.user_input,
-            )
-        ],
-        metadata={"user_metadata": metadata},  # Store metadata for reuse
+        events=[Event(type="user_input", data=request.user_input)],
+        metadata={"user_metadata": metadata},
     )
     thread_id = store.create(thread)
-
-    # Process thread
-    updated_thread = await process_thread(thread, thread_id, metadata)
-
+    background_tasks.add_task(process_thread, thread, thread_id, metadata)
     return ThreadResponse(
         thread_id=thread_id,
-        events=[e.dict() for e in updated_thread.events],
-        status="completed"
-        if not updated_thread.awaiting_human_response()
-        else "awaiting_response",
-        awaiting_human_response=updated_thread.awaiting_human_response(),
+        events=[e.dict() for e in thread.events],
+        status="pending",
+        awaiting_human_response=thread.awaiting_human_response(),
     )
 
 
 @app.post("/threads/{thread_id}/resume", response_model=ThreadResponse)
-async def resume_thread(thread_id: UUID, request: ResumeThreadRequest):
+async def resume_thread(
+    thread_id: UUID, request: ResumeThreadRequest, background_tasks: BackgroundTasks
+):
     """Resume an existing thread with clarification input."""
     thread = store.get(str(thread_id))
     if not thread:
@@ -128,15 +123,14 @@ async def resume_thread(thread_id: UUID, request: ResumeThreadRequest):
 
     # Process thread with original metadata
     metadata = thread.metadata.get("user_metadata", {})
-    updated_thread = await process_thread(thread, str(thread_id), metadata)
+    store.update(str(thread_id), thread)
+    background_tasks.add_task(process_thread, thread, str(thread_id), metadata)
 
     return ThreadResponse(
         thread_id=str(thread_id),
-        events=[e.dict() for e in updated_thread.events],
-        status="completed"
-        if not updated_thread.awaiting_human_response()
-        else "awaiting_response",
-        awaiting_human_response=updated_thread.awaiting_human_response(),
+        events=[e.dict() for e in thread.events],
+        status="pending",
+        awaiting_human_response=False,
     )
 
 
@@ -158,43 +152,32 @@ async def get_thread(thread_id: UUID):
 
 
 @app.get("/threads/{thread_id}/context-file", response_class=FileResponse)
-async def get_thread_context_file(thread_id: UUID, background_tasks: BackgroundTasks):
+async def get_thread_context_file(thread_id: UUID):
     """Download the thread's context as a JSON file."""
-    thread = store.get(str(thread_id))
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
-
-    # Prepare context data
-    context_data = {
-        "thread_id": str(thread_id),
-        "events": [e.dict() for e in thread.events],
-        "status": "completed"
-        if not thread.awaiting_human_response()
-        else "awaiting_response",
-        "awaiting_human_response": thread.awaiting_human_response(),
-    }
-
-    # Create temporary file
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False
-    ) as temp_file:
-        json.dump(context_data, temp_file, indent=2)
-        temp_file_path = temp_file.name
-
-    # Return file as response
-    background_tasks.add_task(os.remove, temp_file_path)
+    file_path = store.context_dir / f"{thread_id}.json"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Context file not found")
     return FileResponse(
-        path=temp_file_path,
+        path=str(file_path),
         filename=f"context_{str(thread_id)}.json",
         media_type="application/json",
     )
+
+
+@app.get("/threads/{thread_id}/events")
+async def get_new_events(thread_id: UUID, since: int = 0):
+    thread = store.get(str(thread_id))
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    events = [e.dict() for e in thread.events[since:]]
+    return {"events": events, "total": len(thread.events)}
 
 
 @app.get("/tools")
 def list_tools():
     """List all available tools in the calculator registry."""
     tools = []
-    for name, tool_def in registry.get_tool_definitions().items():
+    for name, tool_def in global_registry.get_tool_definitions().items():
         tools.append({"name": name, "description": tool_def.description or ""})
     return {"tools": tools}
 

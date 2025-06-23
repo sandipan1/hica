@@ -57,14 +57,6 @@ class Thread(BaseModel, Generic[T]):
             and last_event.data.get("intent") == "clarification"
         )
 
-    def awaiting_human_approval(self) -> bool:
-        if not self.events:
-            return False
-        last_event = self.events[-1]
-        return isinstance(last_event.data, dict) and last_event.data.get(
-            "requires_approval", False
-        )
-
     def set_context(self, key: str, value: Any) -> None:
         """Set a context value in the thread's metadata."""
         self.metadata[key] = value

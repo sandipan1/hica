@@ -90,15 +90,24 @@ class MCPConnectionManager:
     def __init__(self, server_path_or_url):
         self.client = Client(server_path_or_url)
 
-    async def connect(self):
-        """Establish connection to the MCP server"""
+    async def __aenter__(self):
+        """Establish connection to the MCP server with context manager"""
         if not self.client.is_connected():
             await self.client.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type=None, exc_value=None, traceback=None):
+        """Close connection to the MCP server with context manager"""
+        if self.client.is_connected():
+            await self.client.__aexit__(exc_type, exc_value, traceback)
+
+    async def connect(self):
+        """Establish connection to the MCP server"""
+        await self.__aenter__()
 
     async def disconnect(self):
         """Close connection to the MCP server"""
-        if self.client.is_connected():
-            await self.client.__aexit__(None, None, None)
+        await self.__aexit__(None, None, None)
 
     async def call_tool(self, name, arguments=None):
         """Call a tool on the MCP server"""
