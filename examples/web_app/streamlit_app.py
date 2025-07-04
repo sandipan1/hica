@@ -5,7 +5,7 @@ import os
 from streamlit_autorefresh import st_autorefresh
 
 # API base URL
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = "http://localhost:8001"
 
 # Initialize session state
 if "thread_id" not in st.session_state:
