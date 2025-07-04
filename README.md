@@ -93,7 +93,7 @@ from hica.state import ThreadStore
 
 async def main():
     agent = Agent(
-        config=AgentConfig(model="gpt-4.1-mini"),
+        config=AgentConfig(model="openai/gpt-4.1-mini"),
         tool_registry=registry,
         metadata={"userid": "1234", "role": "developer"}
     )
