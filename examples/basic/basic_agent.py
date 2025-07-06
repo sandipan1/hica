@@ -1,9 +1,10 @@
 import asyncio
 
-from examples.basic.calculator_tools import registry as calculator_registry
-from hica import Agent, AgentConfig, ThreadStore
-from hica.core import Event, Thread
+from calculator_tools import registry as calculator_registry
+
+from hica import Agent, AgentConfig, Thread
 from hica.logging import get_thread_logger
+from hica.memory import ConversationMemoryStore
 
 
 async def main():
@@ -13,38 +14,39 @@ async def main():
             "You are an autonomous agent. Reason carefully to select tools based on their name, description, and parameters. "
             "Analyze the user input, identify the required operation, and determine if clarification is needed."
         ),
-        context_format="json",
     )
 
-    metadata = {"userid": "1234", "role": "analyst"}
+    metadata = {
+        "userid": "1234",
+        "role": "analyst",
+        "agent_config": config.model_dump(),
+    }
 
     agent = Agent(
         config=config,
         tool_registry=calculator_registry,
-        metadata=metadata,
     )
+    # prompt_store = PromptStore(file_path="prompts.json")
+    # # prompt_store.set("citation", "Cite using {style} style for {date}")
+    # print(prompt_store.get("citation", style="APA", date="2025"))
 
-    # Create thread with metadata
-    thread = Thread(
-        events=[
-            Event(
-                type="user_input",
-                data="Calculate 153 minus 3 and then divide the result with.. ",
-            )
-        ],
+    thread = Thread(metadata=metadata)  ## Create a new thread
+    thread.add_event(
+        type="user_input", data="what is 2 times 4 and the result subtracted from 24"
     )
-    store = ThreadStore()
-    thread_id = store.create(thread)
+    # Create a file-based MemoryStore to store the thread
+    store = ConversationMemoryStore(backend_type="file", context_dir="context")
+    store.set(thread)
 
     # Get thread-specific logger
-    logger = get_thread_logger(thread_id, metadata)
+    logger = get_thread_logger(thread.thread_id, metadata)
 
     logger.info("Starting new thread", user_input=thread.events[0].data)
     # We loop through the generator to run it to completion.
     # The `thread` object itself is updated, so we don't need to capture the yielded values.
     async for _ in agent.agent_loop(thread):
         pass
-    store.update(thread_id, thread)
+    store.set(thread)
 
     logger.info(
         "Thread completed",

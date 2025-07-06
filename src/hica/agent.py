@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from hica.core import Event, Thread
 from hica.logging import logger
+from hica.memory import MemoryStore
 from hica.models import (
     ClarificationRequest,
     DoneForNow,
@@ -28,7 +29,6 @@ class AgentConfig(BaseModel):
         "If the user's request has been fully addressed, respond with 'done'. "
         "If you require further input or clarification, respond with 'clarification'."
     )
-    context_format: str = "json"
 
 
 class Agent(Generic[T]):
@@ -39,12 +39,14 @@ class Agent(Generic[T]):
         config: AgentConfig,
         tool_registry: Optional[ToolRegistry] = None,
         metadata: Optional[Dict[str, any]] = None,
+        memories: Optional[Dict[str, MemoryStore]] = None,
     ):
         self.config = config
         self.tool_registry = tool_registry or ToolRegistry()
         self.response_model: Type[BaseModel] = DynamicToolCall
         self.metadata = metadata or {}
         self._tool_metadata_cache: Optional[str] = None
+        self.memories = memories or {}
         logger.info(
             "Agent initialized", config=config.model_dump(), metadata=self.metadata
         )
@@ -268,3 +270,34 @@ class Agent(Generic[T]):
             thread.append_event(Event(type="tool_response", data={"response": result}))
             logger.debug("Tool response recorded", result=result)
             yield thread  # Yield after tool execution
+
+    async def run_llm(
+        self,
+        user_input: str,
+        system_prompt: Optional[str] = None,
+        response_model: Optional[Type[BaseModel]] = None,
+        thread: Optional[Thread[T]] = None,
+    ) -> str:
+        """
+        Run a single LLM call with the given user input and optional system prompt.
+        Returns the raw LLM response (or parsed if response_model is provided).
+        """
+        messages = []
+        if system_prompt or self.config.system_prompt:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": system_prompt or self.config.system_prompt,
+                }
+            )
+        messages.append({"role": "user", "content": user_input})
+
+        model = response_model or FinalResponse
+        response = await self._call_llm(messages, model)
+        if thread is not None:
+            thread.append_event(Event(type="llm_response", data=response.message))
+
+        # If using a custom response_model, return the parsed object; else, return the text
+        if hasattr(response, "message"):
+            return response.message
+        return str(response)
