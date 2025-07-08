@@ -1,8 +1,9 @@
 import json
+import uuid
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, Generic, List, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .logging import logger
 from .models import Event
@@ -11,8 +12,9 @@ T = TypeVar("T")
 
 
 class Thread(BaseModel, Generic[T]):
-    events: List[Event] = []
-    metadata: Dict[str, Any] = {}
+    thread_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    events: List[Event] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     def serialize_for_llm(self, format: str = "json") -> str:
         """Serialize thread for LLM consumption, excluding redundant events."""
@@ -114,3 +116,8 @@ class Thread(BaseModel, Generic[T]):
         except Exception as e:
             logger.error("Unexpected error deserializing Thread", error=str(e))
             raise
+
+    def add_event(self, type: str, data: Any) -> None:
+        """Add an event to the thread with the given type and data."""
+        event = Event(type=type, data=data)
+        self.events.append(event)

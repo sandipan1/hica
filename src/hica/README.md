@@ -89,7 +89,7 @@ def add(a: int, b: int) -> int:
 import asyncio
 from hica.agent import Agent, AgentConfig
 from hica.core import Thread, Event
-from hica.memory import MemoryStore
+from hica.memory import ConversationMemoryStore
 
 async def main():
     agent = Agent(

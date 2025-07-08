@@ -23,7 +23,7 @@ import sys
 
 from hica.agent import Agent, AgentConfig
 from hica.core import Event, Thread
-from hica.state import ThreadStore
+from hica.memory import ConversationMemoryStore  , SQLConversationMemoryStore
 from hica.tools import ToolRegistry
 from hica.logging import get_thread_logger
 from rich import print
@@ -48,7 +48,7 @@ config = AgentConfig(model="openai/gpt-4.1-mini")
 
 
 async def main():
-    store = ThreadStore()
+    store = ConversationMemoryStore()  
     agent = Agent(config=config, tool_registry=registry)
     
     if len(sys.argv) > 1:
@@ -72,7 +72,7 @@ async def main():
             thread.append_event(Event(type="user_input", data=clarification))
             async for _ in agent.agent_loop(thread):
                 pass
-            store.update(thread_id, thread)
+            store.set(thread_id, thread)
             # print(f"Thread events after resuming: {[e.type for e in thread.events]}")
             # print("Final result:", thread.events[-1].data)
             logger.info(
@@ -84,13 +84,13 @@ async def main():
     else:
         # --- Start a new thread ---
         print("\n=== Step 1: Start a new thread ===")
-        thread = Thread(events=[Event(type="user_input", data="Add 5 and ...")])
-        thread_id = store.create(thread)
+        thread = Thread(events=[Event(type="user_input", data="how many types of cats are there")])
+        thread_id = store.create(thread)  # <-- thread_id creation via memory store
         logger = get_thread_logger(thread_id)
         logger.info(f"Created new thread with id: {thread_id}")
         async for _ in agent.agent_loop(thread):
             pass
-        store.update(thread_id, thread)
+        store.set(thread_id, thread)
         logger.info(
         "Thread completed",
         events=[e.dict() for e in thread.events],
