@@ -3,6 +3,7 @@ import json
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
+from pydantic.json_schema import SkipJsonSchema
 
 
 def serialize_mcp_result(result: Any) -> dict | str | float | int | list | None:
@@ -126,4 +127,4 @@ class FinalResponse(BaseModel):
     intent: str = "final_response"
     message: str
     summary: Optional[str] = None
-    raw_results: Optional[Dict[str, Any]] = None
+    raw_results: SkipJsonSchema[Optional[Dict[str, Any]]] = None

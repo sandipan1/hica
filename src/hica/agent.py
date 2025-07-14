@@ -3,7 +3,7 @@ from typing import AsyncGenerator, Dict, Generic, List, Literal, Optional, Type,
 import instructor
 from pydantic import BaseModel
 
-from hica.core import Event, Thread
+from hica.core import Thread
 from hica.logging import logger
 from hica.memory import MemoryStore
 from hica.models import (
@@ -68,54 +68,55 @@ class Agent(Generic[T]):
 
     def _build_messages(
         self,
-        thread: Thread[T],
-        instruction: str,
-        include_tools: bool = True,
-        for_parameters: bool = False,
+        prompt: str,
+        thread: Optional[Thread] = None,
+        context: Optional[str] = None,
+        **kwargs,
     ) -> List[Dict[str, str]]:
-        """Build a list of messages from thread events for LLM calls."""
         messages = [{"role": "system", "content": self.config.system_prompt}]
 
-        # Add tool metadata if requested
-        if include_tools:
-            tool_metadata = self._format_tool_metadata()
-            if tool_metadata:
-                messages[0]["content"] += f"\nAvailable tools:\n{tool_metadata}"
+        # Add tool metadata
+        tool_metadata = self._format_tool_metadata()
+        if tool_metadata:
+            messages[0]["content"] += f"\nAvailable tools:\n{tool_metadata}"
 
-        # Add conversation history
-        for event in thread.events:
-            if event.type == "user_input":
-                messages.append({"role": "user", "content": str(event.data)})
-            elif event.type == "llm_response":
-                if "intent" in event.data:
-                    intent = event.data["intent"]
-                    if intent in ["done", "clarification"]:
-                        messages.append({"role": "assistant", "content": intent})
+        # Add context if provided
+        if context:
+            messages[0]["content"] += f"\n\nContext:\n{context}"
+
+        # Add conversation history if provided
+        if thread:
+            for event in thread.events:
+                if event.type == "user_input":
+                    messages.append({"role": "user", "content": str(event.data)})
+                elif event.type == "llm_response":
+                    if "intent" in event.data:
+                        intent = event.data["intent"]
+                        if intent in ["done", "clarification"]:
+                            messages.append({"role": "assistant", "content": intent})
+                        else:
+                            tool_name = intent
+                            tool_args = event.data.get("arguments", {})
+                            messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": f"Selected tool '{tool_name}' with parameters: {tool_args}",
+                                }
+                            )
                     else:
-                        tool_name = intent
-                        tool_args = event.data.get("arguments", {})
                         messages.append(
-                            {
-                                "role": "assistant",
-                                "content": f"Selected tool '{tool_name}' with parameters: {tool_args}",
-                            }
+                            {"role": "assistant", "content": str(event.data)}
                         )
-                else:
-                    messages.append({"role": "assistant", "content": str(event.data)})
-            elif event.type == "tool_response":
-                messages.append(
-                    {"role": "user", "content": f"Tool execution result: {event.data}"}
-                )
+                elif event.type == "tool_response":
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"Tool execution result: {event.data}",
+                        }
+                    )
 
-        # Add specific instruction
-        if for_parameters:
-            messages[0]["content"] += (
-                "\nYou are an expert at extracting parameters for tools. "
-                "Analyze the user's request and previous tool results to provide the correct parameters. "
-                "Use numbers directly from the request or the most recent tool result if implied."
-            )
-        messages.append({"role": "user", "content": instruction})
-
+        # Add the user prompt
+        messages.append({"role": "user", "content": prompt})
         return messages
 
     async def _call_llm(
@@ -136,7 +137,9 @@ class Agent(Generic[T]):
             logger.error("LLM call failed", error=str(e), messages=messages)
             raise ValueError(f"LLM call failed: {str(e)}")
 
-    async def _select_tool(self, thread: Thread[T]) -> BaseModel:
+    async def _select_tool(
+        self, thread: Thread[T], context: Optional[str] = None
+    ) -> BaseModel:
         """Select the next tool or terminal state using the LLM."""
         valid_intents = tuple(self.tool_registry.all_tool_defs.keys()) + (
             "done",
@@ -149,13 +152,19 @@ class Agent(Generic[T]):
             reason: str
 
         instruction = (
+            "IMPORTANT: Only call tools when they are absolutely necessary. If the USER's task is general or you already know the answer, respond without calling tools. NEVER make redundant tool calls as these are very expensive."
+            "IMPORTANT: If you state that you will use a tool, immediately call that tool as your next action."
             "Based on the conversation and tool results, select the next tool (intent), "
+            "When a tool name is explicitly mentioned in the context, use that tool"
             "or respond with 'done' if the task is complete, or 'clarification' if more information is needed. "
             "Respond ONLY with the intent name, 'done', or 'clarification'."
         )
-        messages = self._build_messages(thread, instruction)
-        response = await self._call_llm(messages, ToolSelection)
-        thread.append_event(Event(type="llm_response", data=response.model_dump()))
+
+        # Use run_llm with response model
+        response = await self.run_llm(
+            instruction, thread=thread, context=context, response_model=ToolSelection
+        )
+        print(type(response), "---------")
         logger.info("Tool selected", intent=response.intent)
 
         if response.intent == "done":
@@ -166,8 +175,17 @@ class Agent(Generic[T]):
             )
         return response
 
-    async def _fill_parameters(self, thread: Thread[T], intent: str) -> DynamicToolCall:
-        """Fill parameters for the selected tool using the LLM."""
+    async def fill_parameters(
+        self,
+        intent: str,
+        thread: Optional[Thread[T]] = None,
+        add_event: bool = True,
+        context: Optional[str] = None,
+    ) -> Dict[str, any]:
+        """
+        Fill parameters for a tool using LLM generation.
+        Similar to run_llm abstraction - simple input/output with optional logging.
+        """
         tool_def = self.tool_registry.all_tool_defs.get(intent)
         if not tool_def:
             logger.error("Tool not found", intent=intent)
@@ -179,11 +197,13 @@ class Agent(Generic[T]):
             f"Description: {tool_def.description}\n"
             f"Parameters schema:\n{tool_def.parameters_json_schema}\n"
             "Considering the full conversation history and the most recent tool execution result, "
-            "provide ONLY the required parameters as per the schema above. "
-            "If the user's request implies using a previous result, use that result as an input."
+            "provide ONLY the required parameters as per the schema above."
         )
-        messages = self._build_messages(thread, instruction, for_parameters=True)
-        param_response = await self._call_llm(messages, ToolParamsModel)
+
+        # Use run_llm with response model
+        param_response = await self.run_llm(
+            instruction, thread=thread, context=context, response_model=ToolParamsModel
+        )
 
         arguments = {
             param_name: getattr(param_response, param_name)
@@ -192,10 +212,14 @@ class Agent(Generic[T]):
             ).keys()
             if hasattr(param_response, param_name)
         }
-        tool_call = DynamicToolCall(intent=intent, arguments=arguments)
-        thread.append_event(Event(type="llm_response", data=tool_call.model_dump()))
+
+        if add_event and thread is not None:
+            thread.add_event(
+                "llm_parameters", {"intent": intent, "arguments": arguments}
+            )
+
         logger.info("Tool parameters filled", intent=intent)
-        return tool_call
+        return arguments
 
     async def _generate_final_response(self, thread: Thread[T]) -> FinalResponse:
         """Generate a final response summarizing the results for the user."""
@@ -204,25 +228,33 @@ class Agent(Generic[T]):
             "provide a clear and concise response to the user's original request. "
             "Summarize the key findings or results in a user-friendly way."
         )
-        messages = self._build_messages(thread, instruction)
-
-        class ResponseModel(BaseModel):
-            message: str
-            summary: Optional[str] = None
-
-        response = await self._call_llm(messages, ResponseModel)
-
+        response = await self.run_llm(
+            instruction,
+            thread=thread,
+            response_model=FinalResponse,
+            add_event=False,  # Don't add 'llm_response' event
+        )
         # Collect all tool results
         tool_results = {}
         for event in thread.events:
             if event.type == "tool_response" or event.type == "user_input":
                 tool_results[event.type] = event.data
 
-        return FinalResponse(
+        final_response = FinalResponse(
             message=response.message, summary=response.summary, raw_results=tool_results
         )
 
-    async def agent_loop(self, thread: Thread[T]) -> AsyncGenerator[Thread, None]:
+        # Add a 'final_response' event to the thread
+        thread.add_event(
+            type="llm_response",
+            data=final_response.model_dump(),
+        )
+
+        return final_response
+
+    async def agent_loop(
+        self, thread: Thread[T], context: Optional[str] = None
+    ) -> AsyncGenerator[Thread, None]:
         """
         Run the agent loop to process the thread until completion or clarification.
 
@@ -238,15 +270,12 @@ class Agent(Generic[T]):
 
         while True:
             # Step 1: Select tool or terminal state
-            selection = await self._select_tool(thread)
+            selection = await self._select_tool(thread, context)
             yield thread  # Yield after tool selection
 
             # Step 2: Handle terminal states
             if isinstance(selection, DoneForNow):
                 final_response = await self._generate_final_response(thread)
-                thread.append_event(
-                    Event(type="llm_response", data=final_response.model_dump())
-                )
                 logger.info("Final response generated", response=final_response.message)
                 yield thread
                 return  # End of loop
@@ -257,47 +286,82 @@ class Agent(Generic[T]):
                 return  # End of loop
 
             # Step 3: Fill parameters for the selected tool
-            tool_call = await self._fill_parameters(thread, selection.intent)
-            thread.append_event(Event(type="tool_call", data=tool_call.model_dump()))
+            tool_call = await self.fill_parameters(selection.intent, thread)
             yield thread  # Yield after params are filled and tool_call is formulated
 
             # Step 4: Execute the tool
             logger.debug("Executing tool call", intent=tool_call.intent)
-            result = await self.tool_registry.execute_tool(
-                tool_call.intent, tool_call.arguments
+            result = await self.execute_tool(
+                tool_call.intent, tool_call.arguments, thread=thread, add_event=True
             )
-            result = serialize_mcp_result(result)
-            thread.append_event(Event(type="tool_response", data={"response": result}))
-            logger.debug("Tool response recorded", result=result)
             yield thread  # Yield after tool execution
 
     async def run_llm(
         self,
-        user_input: str,
-        system_prompt: Optional[str] = None,
+        prompt: str,
+        thread: Optional[Thread] = None,
+        context: Optional[str] = None,
+        max_thread_events: Optional[int] = None,
         response_model: Optional[Type[BaseModel]] = None,
+        add_event: bool = True,
+        **kwargs,
+    ) -> BaseModel:
+        # Apply pruning if specified
+        if max_thread_events and thread:
+            thread.events = thread.events[-max_thread_events:]
+
+        messages = self._build_messages(prompt, thread, context, **kwargs)
+        logger.info(
+            "LLM call",
+            messages=messages,
+            response_model=response_model.__name__ if response_model else "text",
+        )
+        try:
+            # Use provided response_model or default
+            class Response(BaseModel):
+                response: str
+
+            model_to_use = response_model or Response
+            response = await self._call_llm(messages, model_to_use)
+
+            if thread is not None and add_event:
+                thread.add_event(type="llm_response", data=response.model_dump())
+
+            # Return the response
+            return response
+        except Exception as e:
+            logger.error("LLM call failed", error=str(e), messages=messages)
+            raise ValueError(f"LLM call failed: {str(e)}")
+
+    async def execute_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, any],
         thread: Optional[Thread[T]] = None,
-    ) -> str:
+        add_event: bool = True,
+    ) -> any:
         """
-        Run a single LLM call with the given user input and optional system prompt.
-        Returns the raw LLM response (or parsed if response_model is provided).
+        Execute a single tool with optional thread logging.
+        Simple input/output abstraction similar to run_llm.
         """
-        messages = []
-        if system_prompt or self.config.system_prompt:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": system_prompt or self.config.system_prompt,
-                }
-            )
-        messages.append({"role": "user", "content": user_input})
+        try:
+            # Log tool call event if requested
+            if add_event and thread is not None:
+                thread.add_event(
+                    "tool_call", {"intent": tool_name, "arguments": arguments}
+                )
 
-        model = response_model or FinalResponse
-        response = await self._call_llm(messages, model)
-        if thread is not None:
-            thread.append_event(Event(type="llm_response", data=response.message))
+            # Execute tool using existing registry
+            result = await self.tool_registry.execute_tool(tool_name, arguments)
+            result = serialize_mcp_result(result)
 
-        # If using a custom response_model, return the parsed object; else, return the text
-        if hasattr(response, "message"):
-            return response.message
-        return str(response)
+            # Log tool response event if requested
+            if add_event and thread is not None:
+                thread.add_event("tool_response", {"response": result})
+
+            logger.info("Tool execution completed", tool=tool_name)
+            return result
+
+        except Exception as e:
+            logger.error("Tool execution failed", tool=tool_name, error=str(e))
+            raise

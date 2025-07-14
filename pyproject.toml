@@ -1,6 +1,6 @@
 [project]
 name = "hica"
-version = "1.0.1"
+version = "1.2.0"
 description = "Highly Customizable Agent Library for maximal visibility and control for your Agentic workflows"
 authors = [{ name = "Sandipan Haldar", email = "work@sandipanhaldar.com" }]
 license = { text = "MIT" }
@@ -14,8 +14,9 @@ dependencies = [
     "uvicorn",
     "python-dotenv",
     "structlog",
-    "fastmcp",
-    "openai"
+    "fastmcp>=2.10.2",
+    "openai",
+    "pymongo>=4.13.2",
 ]
 
 [project.optional-dependencies]

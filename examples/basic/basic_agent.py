@@ -31,9 +31,7 @@ async def main():
     # print(prompt_store.get("citation", style="APA", date="2025"))
 
     thread = Thread(metadata=metadata)  ## Create a new thread
-    thread.add_event(
-        type="user_input", data="what is 2 times 4 and the result subtracted from 24"
-    )
+    thread.add_event(type="user_input", data="what is 2 times 4 ")
     # Create a file-based MemoryStore to store the thread
     store = ConversationMemoryStore(backend_type="file", context_dir="context")
     store.set(thread)

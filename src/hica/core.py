@@ -1,3 +1,7 @@
+"""
+Thread is working memory of the agent.
+"""
+
 import json
 import uuid
 import xml.etree.ElementTree as ET
@@ -67,10 +71,6 @@ class Thread(BaseModel, Generic[T]):
     def get_context(self, key: str, default: Any = None) -> Any:
         """Get a context value from the thread's metadata."""
         return self.metadata.get(key, default)
-
-    def append_event(self, event: Event) -> None:
-        self.events.append(event)
-        logger.debug("Event appended", event_type=event.type)
 
     async def summarize_context(self, max_events: int = 10) -> None:
         if len(self.events) <= max_events:

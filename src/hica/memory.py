@@ -37,6 +37,8 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, Generic, Optional, TypeVar
 
+from pymongo import MongoClient
+
 from hica.core import Thread
 
 T = TypeVar("T")
@@ -109,9 +111,9 @@ class FileMemoryStore(MemoryStore[T]):
 
 class ConversationMemoryStore:
     """
-    Unified conversation store supporting both file-based (directory per thread)
-    and SQL-based (database table) storage. Specify backend_type as 'file' or 'sql'.
-    For 'file', provide context_dir. For 'sql', provide db_path.
+    Unified conversation store supporting file-based, SQL-based, and MongoDB (NoSQL) storage.
+    Specify backend_type as 'file', 'sql', or 'mongo'.
+    For 'file', provide context_dir. For 'sql', provide db_path. For 'mongo', provide uri, db_name, and collection.
     """
 
     def __init__(
@@ -119,6 +121,9 @@ class ConversationMemoryStore:
         backend_type: str = "file",
         context_dir: str = "context",
         db_path: str = "conversations.db",
+        mongo_uri: str = "mongodb://localhost:27017",
+        mongo_db: str = "hica",
+        mongo_collection: str = "threads",
     ):
         self.backend_type = backend_type
         if backend_type == "file":
@@ -130,8 +135,12 @@ class ConversationMemoryStore:
                 "CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, data TEXT)"
             )
             self.conn.commit()
+        elif backend_type == "mongo":
+            self.mongo_store = MongoMemoryStore(
+                uri=mongo_uri, db_name=mongo_db, collection=mongo_collection
+            )
         else:
-            raise ValueError("backend_type must be 'file' or 'sql'")
+            raise ValueError("backend_type must be 'file', 'sql', or 'mongo'")
 
     def set(self, thread: Thread):
         if not thread.thread_id:
@@ -147,6 +156,8 @@ class ConversationMemoryStore:
                 (thread.thread_id, data),
             )
             self.conn.commit()
+        elif self.backend_type == "mongo":
+            self.mongo_store.set(thread.thread_id, thread)
 
     def get(self, thread_id: str) -> Optional[Thread]:
         if self.backend_type == "file":
@@ -163,6 +174,8 @@ class ConversationMemoryStore:
             if row:
                 return Thread.from_json(row[0])
             return None
+        elif self.backend_type == "mongo":
+            return self.mongo_store.get(thread_id)
 
     def delete(self, thread_id: str):
         if self.backend_type == "file":
@@ -172,6 +185,8 @@ class ConversationMemoryStore:
         elif self.backend_type == "sql":
             self.conn.execute("DELETE FROM threads WHERE id = ?", (thread_id,))
             self.conn.commit()
+        elif self.backend_type == "mongo":
+            self.mongo_store.delete(thread_id)
 
     def all(self) -> Dict[str, Thread]:
         if self.backend_type == "file":
@@ -183,6 +198,8 @@ class ConversationMemoryStore:
         elif self.backend_type == "sql":
             cursor = self.conn.execute("SELECT id, data FROM threads")
             return {row[0]: Thread.from_json(row[1]) for row in cursor.fetchall()}
+        elif self.backend_type == "mongo":
+            return self.mongo_store.all()
 
 
 class SQLMemoryStore(MemoryStore[T]):
@@ -250,3 +267,27 @@ class PromptStore:
 
     def all(self) -> Dict[str, str]:
         return self.backend.all()
+
+
+class MongoMemoryStore(MemoryStore[T]):
+    def __init__(
+        self, uri="mongodb://localhost:27017", db_name="hica", collection="threads"
+    ):
+        self.client = MongoClient(uri)
+        self.db = self.client[db_name]
+        self.collection = self.db[collection]
+
+    def get(self, key: str) -> Optional[T]:
+        doc = self.collection.find_one({"thread_id": key})
+        if doc:
+            return Thread(**doc)  # or T(**doc) if generic
+        return None
+
+    def set(self, key: str, value: T) -> None:
+        self.collection.replace_one({"thread_id": key}, value.model_dump(), upsert=True)
+
+    def delete(self, key: str) -> None:
+        self.collection.delete_one({"thread_id": key})
+
+    def all(self) -> Dict[str, T]:
+        return {doc["thread_id"]: Thread(**doc) for doc in self.collection.find()}
