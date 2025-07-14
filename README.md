@@ -83,13 +83,13 @@ def add(a: int, b: int) -> int:
     return a + b
 ```
 
-### 2. Run an Agent
+### 2. Run an Agent (Autonomous agent_loop)
 
 ```python
 import asyncio
 from hica.agent import Agent, AgentConfig
 from hica.core import Thread, Event
-from hica.memory import MemoryStore
+from hica.memory import ConversationMemoryStore
 
 async def main():
     agent = Agent(
@@ -98,12 +98,11 @@ async def main():
         metadata={"userid": "1234", "role": "developer"}
     )
     thread = Thread(events=[Event(type="user_input", data="What is 3 + 4?")])
-    store = ThreadStore()
-    thread_id = store.create(thread)
-    # Iterate through the async generator to run the agent loop to completion
+    store = ConversationMemoryStore(backend_type="file", context_dir="context")
+    # Run the agent loop to completion (autonomous mode)
     async for _ in agent.agent_loop(thread):
         pass
-    store.update(thread_id, thread)
+    store.set(thread)
     print("Events:", [e.model_dump() for e in thread.events])
 
 if __name__ == "__main__":
@@ -112,7 +111,51 @@ if __name__ == "__main__":
 
 ### 3. Inspect State
 
-All conversation state is saved as JSON in the `context/` directory. You can resume or audit any thread at any time.
+All conversation state is saved as JSON in the `context/` directory (or in your chosen backend). You can resume or audit any thread at any time.
+
+---
+
+## 🛠️ Stepwise Parameter Handling and Event Logging
+
+HICA supports both autonomous and stepwise workflows. For stepwise workflows, you can use `fill_parameters` to have the LLM generate tool parameters, which logs an event of type `'llm_parameters'`:
+
+```python
+params = await agent.fill_parameters("add", thread=thread)
+result = await agent.execute_tool("add", params, thread=thread)
+```
+
+If you already have parameters (e.g., from LLM output), call `execute_tool` directly:
+
+```python
+for query in response.queries:
+    result = await agent.execute_tool("search_paper", {"query": query}, thread=thread)
+```
+
+---
+
+## 🗄️ MongoDB Conversation Store
+
+HICA supports storing conversation threads in MongoDB for scalable, production-ready persistence.
+
+```python
+from hica.memory import ConversationMemoryStore
+
+store = ConversationMemoryStore(
+    backend_type="mongo",
+    mongo_uri="mongodb://localhost:27017",
+    mongo_db="hica_test",
+    mongo_collection="threads"
+)
+
+# Create and store a thread
+thread = Thread()
+thread.add_event(type="user_input", data="Hello, MongoDB!")
+store.set(thread)
+
+# Retrieve the thread
+retrieved = store.get(thread.thread_id)
+print(retrieved)
+```
 
 ---
 
@@ -131,7 +174,7 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
-mcp_manager = MCPConnectionManager("http://localhost:8000")  # or MCP server config
+mcp_manager = MCPConnectionManager("http://localhost:8000/mcp")  # or MCP server config
 
 async def setup():
     await mcp_manager.connect()
@@ -158,9 +201,90 @@ See [`examples/main_mcp_tool.py`](examples/main_mcp_tool.py) for a full example.
 - [examples/human_in_loop/human_in_loop_example.py](examples/human_in_loop/human_in_loop_example.py): Human-in-the-loop agent example
 
 ---
+## 🤖 Flexible, Programmable Workflows
+
+HICA supports both fully autonomous agent loops and **stepwise, programmable workflows**. This means you can:
+- Call the LLM for structured output using `run_llm` (e.g., generate a list of queries or tasks).
+- Use `fill_parameters` to have the LLM generate tool parameters (with event logging as `llm_parameters`).
+- Call any tool directly with `execute_tool`.
+- Chain these steps in your own code, with custom logic, error handling, and aggregation.
+
+This gives you **fine-grained control** over the agent's reasoning and tool use, enabling workflows such as:
+- Generating a list of search queries, then calling a tool for each query.
+- Aggregating and processing results as you wish.
+- Passing large context (documents, histories) to the LLM and using the output to drive further tool calls.
+
+**Example: Flexible Orchestration with Tools**
+
+```python
+# LLM generates a list of queries
+class QueryList(BaseModel):
+    queries: List[str]
+
+response = await agent.run_llm(
+    "Generate 3 search queries for ...", thread=thread, response_model=QueryList
+)
+for query in response.queries:
+    result = await agent.execute_tool("search_paper", {"query": query}, thread=thread)
+    # process result as needed
+```
+
+**Example: Large Context LLM Handling**
+
+```python
+# Pass a large document/context to the LLM, then use the output
+response = await agent.run_llm(
+    prompt="Summarize the main findings", thread=thread, context=large_context
+)
+print("LLM response (large context only):", response)
+```
+## the large context is not added to the thread
+
+See [examples/basic/workflow.py](examples/basic/workflow.py) and [examples/basic/large_context_only.py](examples/basic/large_context_only.py) for full examples.
+
+---
+## 🧠 Unified Memory Management
+
+HICA provides a **unified memory abstraction** for all your agent’s needs—not just conversation state, but also prompts, configs, citations, and arbitrary key-value data.
+
+You can use:
+- **ConversationMemoryStore** for conversation threads (with file, SQL, or MongoDB backends)
+- **PromptStore** for prompt templates (with any backend)
+- **InMemoryMemoryStore** for fast, ephemeral data
+- **FileMemoryStore** for persistent key-value data in a JSON file
+- **SQLMemoryStore** for structured, queryable storage
+- **MongoMemoryStore** for scalable, NoSQL storage
+
+All memory types share a minimal, composable interface (`get`, `set`, `delete`, `all`).
+
+**Example: Using Different Memory Types**
+
+```python
+from hica.memory import (
+    ConversationMemoryStore, PromptStore, InMemoryMemoryStore, FileMemoryStore, SQLMemoryStore, MongoMemoryStore
+)
+
+# Conversation history (file, SQL, or MongoDB)
+conversation_store = ConversationMemoryStore(backend_type="file", context_dir="context")
+# Prompt templates (file-based by default)
+prompt_store = PromptStore()
+# Fast ephemeral memory
+fast_mem = InMemoryMemoryStore()
+# Persistent key-value memory
+file_mem = FileMemoryStore("mydata.json")
+# SQL-based memory
+sql_mem = SQLMemoryStore(db_path="memory.db")
+# MongoDB-based memory
+mongo_mem = MongoMemoryStore(uri="mongodb://localhost:27017", db_name="hica", collection="kv")
+```
+
+You can mix and match these memory types for different parts of your agent’s workflow.
+
+---
+
 ## 🧩 Observable and Stateful by Design
 
-HICA provides robust state management through its `Thread` and `ThreadStore` system:
+HICA provides robust state management through its `Thread` and `ConversationMemoryStore` system:
 
 ### Thread: The Core State Container
 
@@ -182,7 +306,7 @@ if thread.awaiting_human_response():
 
 ### Persistent State Management
 
-The `ThreadStore` provides production-grade state persistence:
+The `ConversationMemoryStore` provides production-grade state persistence:
 - **File-based/DB-based Storage**: Each thread is automatically saved as JSON in a configurable context directory
 - **In-memory Caching**: Active threads are cached for performance while maintaining persistence
 - **Resumable Sessions**: Threads can be retrieved and resumed by ID at any time
@@ -345,6 +469,44 @@ Every action—LLM call, tool call, user input, clarification, or final response
 
 ---
 
+## 🛠️ Design Note: Optional Thread and Context
+
+HICA’s agent APIs (e.g., `run_llm`, `fill_parameters`, `select_tool`) accept both `thread` and `context` as optional parameters:
+
+- **thread (Optional):**
+  - If provided, the LLM receives the full event history for context, and new events are appended to the thread (unless `add_event=False`).
+  - If omitted, the LLM operates statelessly—no history is used or recorded. This is useful for testing, isolated calls, or stateless inference.
+
+- **context (Optional):**
+  - If provided, this external context (e.g., a document, search results, or memory) is injected into the LLM prompt for that call only.
+  - It is not persisted in the thread, allowing you to provide temporary or external information without affecting the conversation history.
+
+**This design enables both:**
+- **Stateful, auditable workflows** (with thread)
+- **Stateless, ad-hoc LLM calls** (without thread)
+- **Flexible context injection** for advanced reasoning
+
+**Example: Stateless LLM Call for Testing**
+
+```python
+response = await agent.run_llm(
+    prompt="What is the capital of France?",
+    # No thread, no context: pure LLM call
+)
+print(response)
+```
+
+**Example: Context-Augmented LLM Call**
+
+```python
+response = await agent.run_llm(
+    prompt="Summarize the following document.",
+    context=large_document,
+    # Optionally, with or without thread
+)
+```
+
+---
 
 ## 🧪 Testing
 
@@ -353,6 +515,8 @@ Run all tests with:
 ```bash
 pytest
 ```
+
+- Includes tests in `tests` dir
 
 ---
 
