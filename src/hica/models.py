@@ -37,7 +37,7 @@ def serialize_mcp_result(result: Any) -> dict | str | float | int | list | None:
 
     # Handle Pydantic Models first
     if hasattr(result, "model_dump"):
-        return result.model_dump()
+        return result.model_dump(exclude_none=True)
 
     # Handle lists recursively
     if isinstance(result, list):
@@ -99,7 +99,11 @@ class ClarificationRequest(BaseModel):
 
 class Event(BaseModel):
     type: str
+    step: Optional[str] = None
     data: dict | str | float | int | list | None  # Accepts list and None
+
+    class Config:
+        exclude_none = True
 
     # @computed_field
     # @property
@@ -124,7 +128,6 @@ class DynamicToolCall(BaseModel):
 class FinalResponse(BaseModel):
     """Represents the final response from the LLM to the user."""
 
-    intent: str = "final_response"
     message: str
     summary: Optional[str] = None
     raw_results: SkipJsonSchema[Optional[Dict[str, Any]]] = None

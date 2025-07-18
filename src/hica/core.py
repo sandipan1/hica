@@ -102,7 +102,7 @@ class Thread(BaseModel, Generic[T]):
 
     def to_json(self) -> str:
         """Serialize Thread to JSON string."""
-        return self.model_dump_json(indent=2)
+        return self.model_dump_json(exclude_none=True, indent=2)
 
     @classmethod
     def from_json(cls, json_str: str) -> "Thread":
@@ -117,7 +117,7 @@ class Thread(BaseModel, Generic[T]):
             logger.error("Unexpected error deserializing Thread", error=str(e))
             raise
 
-    def add_event(self, type: str, data: Any) -> None:
+    def add_event(self, type: str, data: Any, step: str = None) -> None:
         """Add an event to the thread with the given type and data."""
-        event = Event(type=type, data=data)
+        event = Event(type=type, step=step, data=data)
         self.events.append(event)

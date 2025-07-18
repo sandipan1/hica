@@ -1,7 +1,7 @@
-from typing import AsyncGenerator, Dict, Generic, List, Literal, Optional, Type, TypeVar
+from typing import AsyncGenerator, Dict, Generic, List, Optional, Type, TypeVar
 
 import instructor
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from hica.core import Thread
 from hica.logging import logger
@@ -137,19 +137,38 @@ class Agent(Generic[T]):
             logger.error("LLM call failed", error=str(e), messages=messages)
             raise ValueError(f"LLM call failed: {str(e)}")
 
-    async def _select_tool(
-        self, thread: Thread[T], context: Optional[str] = None
+    async def select_tool(
+        self,
+        tools: List[str] = None,
+        thread: Optional[Thread[T]] = None,
+        context: Optional[str] = None,
+        add_event=True,
     ) -> BaseModel:
         """Select the next tool or terminal state using the LLM."""
-        valid_intents = tuple(self.tool_registry.all_tool_defs.keys()) + (
-            "done",
-            "clarification",
+
+        # print(tuple(self.tool_registry.all_tool_defs.keys()))
+        valid_intents = (
+            list(self.tool_registry.all_tool_defs.keys()) if not tools else list(tools)
         )
-        ToolLiteral = Literal[valid_intents] if valid_intents else str
+        valid_intents += ["done", "clarification"]
+
+        # ToolLiteral = Literal[valid_intents] if valid_intents else str
 
         class ToolSelection(BaseModel):
-            intent: ToolLiteral
+            intent: str = Field(
+                ...,
+                description="The tool to use. Must be one of: "
+                + ", ".join(valid_intents),
+            )
             reason: str
+
+            @model_validator(mode="after")
+            def check_intent(self) -> "ToolSelection":
+                if self.intent not in valid_intents:
+                    raise ValueError(
+                        f"Invalid tool selected: {self.intent}. Must be one of: {valid_intents}"
+                    )
+                return self
 
         instruction = (
             "IMPORTANT: Only call tools when they are absolutely necessary. If the USER's task is general or you already know the answer, respond without calling tools. NEVER make redundant tool calls as these are very expensive."
@@ -162,8 +181,21 @@ class Agent(Generic[T]):
 
         # Use run_llm with response model
         response = await self.run_llm(
-            instruction, thread=thread, context=context, response_model=ToolSelection
+            instruction,
+            thread=thread,
+            context=context,
+            response_model=ToolSelection,
+            add_event=False,
         )
+        if add_event and thread:
+            thread.add_event(
+                type="llm_response",
+                step="ToolSeclection",
+                data={
+                    "intent": response.intent,
+                    "reason": response.reason,
+                },
+            )
         print(type(response), "---------")
         logger.info("Tool selected", intent=response.intent)
 
@@ -202,7 +234,11 @@ class Agent(Generic[T]):
 
         # Use run_llm with response model
         param_response = await self.run_llm(
-            instruction, thread=thread, context=context, response_model=ToolParamsModel
+            instruction,
+            thread=thread,
+            context=context,
+            response_model=ToolParamsModel,
+            add_event=False,
         )
 
         arguments = {
@@ -215,7 +251,9 @@ class Agent(Generic[T]):
 
         if add_event and thread is not None:
             thread.add_event(
-                "llm_parameters", {"intent": intent, "arguments": arguments}
+                type="llm_response",
+                data={"intent": intent, "arguments": arguments},
+                step="llm_parameters",
             )
 
         logger.info("Tool parameters filled", intent=intent)
@@ -247,7 +285,8 @@ class Agent(Generic[T]):
         # Add a 'final_response' event to the thread
         thread.add_event(
             type="llm_response",
-            data=final_response.model_dump(),
+            data=final_response.model_dump(exclude_none=True),
+            step="final_reponse",
         )
 
         return final_response
@@ -264,13 +303,17 @@ class Agent(Generic[T]):
         """
         logger.info(
             "Starting agent loop",
-            thread_id=thread.metadata.get("thread_id", "unknown"),
+            thread_id=thread.thread_id,
         )
         yield thread  # Yield initial state
 
         while True:
             # Step 1: Select tool or terminal state
-            selection = await self._select_tool(thread, context)
+            selection = await self.select_tool(
+                tools=None, thread=thread, context=context
+            )
+            print(selection)
+            logger.info("Selected tool : ", selection)
             yield thread  # Yield after tool selection
 
             # Step 2: Handle terminal states
@@ -286,13 +329,13 @@ class Agent(Generic[T]):
                 return  # End of loop
 
             # Step 3: Fill parameters for the selected tool
-            tool_call = await self.fill_parameters(selection.intent, thread)
+            arguments = await self.fill_parameters(selection.intent, thread)
             yield thread  # Yield after params are filled and tool_call is formulated
 
             # Step 4: Execute the tool
-            logger.debug("Executing tool call", intent=tool_call.intent)
+            logger.debug("Executing tool call", intent=selection.intent)
             result = await self.execute_tool(
-                tool_call.intent, tool_call.arguments, thread=thread, add_event=True
+                selection.intent, arguments, thread=thread, add_event=True
             )
             yield thread  # Yield after tool execution
 
@@ -304,6 +347,7 @@ class Agent(Generic[T]):
         max_thread_events: Optional[int] = None,
         response_model: Optional[Type[BaseModel]] = None,
         add_event: bool = True,
+        step=None,
         **kwargs,
     ) -> BaseModel:
         # Apply pruning if specified
@@ -325,7 +369,16 @@ class Agent(Generic[T]):
             response = await self._call_llm(messages, model_to_use)
 
             if thread is not None and add_event:
-                thread.add_event(type="llm_response", data=response.model_dump())
+                if step != None:
+                    thread.add_event(
+                        type="llm_response",
+                        data=response.model_dump(exclude_none=True),
+                        step=step,
+                    )
+                else:
+                    thread.add_event(
+                        type="llm_response", data=response.model_dump(exclude_none=True)
+                    )
 
             # Return the response
             return response
@@ -348,7 +401,7 @@ class Agent(Generic[T]):
             # Log tool call event if requested
             if add_event and thread is not None:
                 thread.add_event(
-                    "tool_call", {"intent": tool_name, "arguments": arguments}
+                    type="tool_call", data={"intent": tool_name, "arguments": arguments}
                 )
 
             # Execute tool using existing registry
@@ -357,7 +410,10 @@ class Agent(Generic[T]):
 
             # Log tool response event if requested
             if add_event and thread is not None:
-                thread.add_event("tool_response", {"response": result})
+                thread.add_event(
+                    type="tool_response",
+                    data={"response": result, "source": "ToolRegistry"},
+                )
 
             logger.info("Tool execution completed", tool=tool_name)
             return result

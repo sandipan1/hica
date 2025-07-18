@@ -21,12 +21,14 @@ Tip: You can repeat the resume step as many times as needed if the agent request
 import asyncio
 import sys
 
+from rich import print
+
 from hica.agent import Agent, AgentConfig
 from hica.core import Event, Thread
-from hica.memory import ConversationMemoryStore  , SQLConversationMemoryStore
-from hica.tools import ToolRegistry
 from hica.logging import get_thread_logger
-from rich import print
+from hica.memory import ConversationMemoryStore
+from hica.tools import ToolRegistry
+
 # 1. Define a simple tool for demonstration
 registry = ToolRegistry()
 
@@ -48,9 +50,9 @@ config = AgentConfig(model="openai/gpt-4.1-mini")
 
 
 async def main():
-    store = ConversationMemoryStore()  
+    store = ConversationMemoryStore(backend_type="file")
     agent = Agent(config=config, tool_registry=registry)
-    
+
     if len(sys.argv) > 1:
         # --- Resume mode: user provides thread_id as argument ---
         thread_id = sys.argv[1]
@@ -64,11 +66,13 @@ async def main():
         if thread.awaiting_human_response():
             print("Agent requested clarification. Providing missing input...")
             # You can customize the clarification input here:
-            clarification = input(f"Enter clarification for :{thread.events[-1].data}   > ")
+            clarification = input(
+                f"Enter clarification for :{thread.events[-1].data}   > "
+            )
             logger.info(
-                         "Continuing existing thread from clarification request from user ...",
-                        clarification,
-                    )
+                "Continuing existing thread from clarification request from user ...",
+                clarification,
+            )
             thread.append_event(Event(type="user_input", data=clarification))
             async for _ in agent.agent_loop(thread):
                 pass
@@ -84,19 +88,22 @@ async def main():
     else:
         # --- Start a new thread ---
         print("\n=== Step 1: Start a new thread ===")
-        thread = Thread(events=[Event(type="user_input", data="how many types of cats are there")])
-        thread_id = store.create(thread)  # <-- thread_id creation via memory store
-        logger = get_thread_logger(thread_id)
-        logger.info(f"Created new thread with id: {thread_id}")
+        # thread = Thread(
+        #     events=[Event(type="user_input", data="how many types of cats are there")]
+        # )
+        thread = Thread()  # <-- thread_id creation via memory store
+        logger = get_thread_logger(thread_id=thread.thread_id)
+        thread.add_event(type="user_input", data="2+2+? ")
+        logger.info(f"Created new thread with id: {thread.thread_id}")
         async for _ in agent.agent_loop(thread):
             pass
-        store.set(thread_id, thread)
+        store.set(thread)
         logger.info(
-        "Thread completed",
-        events=[e.dict() for e in thread.events],
-    )
+            "Thread completed",
+            events=[e.dict() for e in thread.events],
+        )
         print(f"Thread events after first run: {[e.type for e in thread.events]}")
-        print(f"To resume, run: python human_in_loop_example.py {thread_id}")
+        print(f"To resume, run: python human_in_loop_example.py {thread.thread_id}")
 
 
 if __name__ == "__main__":

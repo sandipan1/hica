@@ -59,7 +59,9 @@ async def main():
             return value
 
     response = await agent.run_llm(
-        "answer the user input", thread=thread, response_model=Query
+        "answer the user input",
+        thread=thread,
+        response_model=Query,
     )
     store.set(thread=thread)
     logger.info("generated 3 queries from the user query ")

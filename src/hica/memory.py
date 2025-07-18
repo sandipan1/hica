@@ -284,7 +284,9 @@ class MongoMemoryStore(MemoryStore[T]):
         return None
 
     def set(self, key: str, value: T) -> None:
-        self.collection.replace_one({"thread_id": key}, value.model_dump(), upsert=True)
+        self.collection.replace_one(
+            {"thread_id": key}, value.model_dump(exclude_none=True), upsert=True
+        )
 
     def delete(self, key: str) -> None:
         self.collection.delete_one({"thread_id": key})

@@ -30,10 +30,13 @@ async def main():
     # # prompt_store.set("citation", "Cite using {style} style for {date}")
     # print(prompt_store.get("citation", style="APA", date="2025"))
 
-    thread = Thread(metadata=metadata)  ## Create a new thread
-    thread.add_event(type="user_input", data="what is 2 times 4 ")
-    # Create a file-based MemoryStore to store the thread
+    thread = Thread()  ## Create a new thread
     store = ConversationMemoryStore(backend_type="file", context_dir="context")
+    thread.add_event(
+        type="user_input",
+        data="what is 2+3+4+4+2 . Use add tool ",
+    )
+    # Create a file-based MemoryStore to store the thread
     store.set(thread)
 
     # Get thread-specific logger

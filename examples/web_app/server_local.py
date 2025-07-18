@@ -1,3 +1,4 @@
+import os
 from typing import Dict, List, Optional
 from uuid import UUID
 
@@ -7,9 +8,10 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from hica import Agent, AgentConfig, ThreadStore
+from hica import Agent, AgentConfig
 from hica.core import Event, Thread
 from hica.logging import get_thread_logger
+from hica.memory import ConversationMemoryStore
 from hica.tools import ToolRegistry
 
 load_dotenv()
@@ -50,8 +52,25 @@ agent_config = AgentConfig(
     context_format="json",
 )
 
-# Thread store
-store = ThreadStore()
+# Conversation memory store (file-based by default, supports MongoDB)
+backend_type = os.getenv("HICA_BACKEND_TYPE", "file")
+if backend_type == "mongo":
+    mongo_uri = os.getenv("HICA_MONGO_URI", "mongodb://localhost:27017")
+    mongo_db = os.getenv("HICA_MONGO_DB", "hica")
+    mongo_collection = os.getenv("HICA_MONGO_COLLECTION", "threads")
+    store = ConversationMemoryStore(
+        backend_type="mongo",
+        mongo_uri=mongo_uri,
+        mongo_db=mongo_db,
+        mongo_collection=mongo_collection,
+    )
+else:
+    store = ConversationMemoryStore(backend_type="file", context_dir="context")
+
+
+def get_context_dir():
+    # Helper for file path in context download endpoint
+    return getattr(store, "dir_path", None) or getattr(store, "context_dir", None)
 
 
 async def process_thread(thread: Thread, thread_id: str, metadata: Dict) -> Thread:
@@ -64,7 +83,7 @@ async def process_thread(thread: Thread, thread_id: str, metadata: Dict) -> Thre
         metadata=metadata,
     )
     async for intermediate_thread in agent.agent_loop(thread):
-        store.update(thread_id, intermediate_thread)
+        store.set(intermediate_thread)
         logger.debug(
             "Intermediate state saved",
             event_count=len(intermediate_thread.events),
@@ -86,7 +105,8 @@ async def create_thread(
         events=[Event(type="user_input", data=request.user_input)],
         metadata={"user_metadata": metadata},
     )
-    thread_id = store.create(thread)
+    store.set(thread)
+    thread_id = thread.thread_id
     background_tasks.add_task(process_thread, thread, thread_id, metadata)
     return ThreadResponse(
         thread_id=thread_id,
@@ -123,7 +143,7 @@ async def resume_thread(
 
     # Process thread with original metadata
     metadata = thread.metadata.get("user_metadata", {})
-    store.update(str(thread_id), thread)
+    store.set(thread)
     background_tasks.add_task(process_thread, thread, str(thread_id), metadata)
 
     return ThreadResponse(
@@ -154,7 +174,12 @@ async def get_thread(thread_id: UUID):
 @app.get("/threads/{thread_id}/context-file", response_class=FileResponse)
 async def get_thread_context_file(thread_id: UUID):
     """Download the thread's context as a JSON file."""
-    file_path = store.context_dir / f"{thread_id}.json"
+    context_dir = get_context_dir()
+    if not context_dir:
+        raise HTTPException(
+            status_code=500, detail="Context directory not available for this backend"
+        )
+    file_path = context_dir / f"{thread_id}.json"
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Context file not found")
     return FileResponse(
