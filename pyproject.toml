@@ -1,6 +1,6 @@
 [project]
 name = "hica"
-version = "1.2.0"
+version = "1.2.1"
 description = "Highly Customizable Agent Library for maximal visibility and control for your Agentic workflows"
 authors = [{ name = "Sandipan Haldar", email = "work@sandipanhaldar.com" }]
 license = { text = "MIT" }
