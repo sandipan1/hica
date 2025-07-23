@@ -29,6 +29,7 @@ class AgentConfig(BaseModel):
         "If the user's request has been fully addressed, respond with 'done'. "
         "If you require further input or clarification, respond with 'clarification'."
     )
+    max_events_before_summarization: Optional[int] = 20
 
 
 class Agent(Generic[T]):
@@ -136,6 +137,36 @@ class Agent(Generic[T]):
         except Exception as e:
             logger.error("LLM call failed", error=str(e), messages=messages)
             raise ValueError(f"LLM call failed: {str(e)}")
+
+    async def summarize_thread_with_llm(self, thread: Thread[T], keep_last_n: int = 5):
+        """
+        Summarizes the thread's events using an LLM, replacing older events with a summary.
+        """
+        
+        class ContextSummary(BaseModel):
+            summary: str = Field(..., description="A concise summary of the key facts, decisions, and outcomes from the conversation history.")
+
+        summarization_prompt = "Summarize the key facts, decisions, and outcomes from the provided conversation history. Focus on information that will be relevant for future steps."
+        
+        # We pass the thread to run_llm, but we will handle adding the event manually.
+        response = await self.run_llm(
+            prompt=summarization_prompt,
+            thread=thread,
+            response_model=ContextSummary,
+            add_event=False 
+        )
+
+        # Create a summary event
+        summary_event = {
+            "type": "context_summary",
+            "data": response.summary
+        }
+
+        # Keep the last N events and prepend the summary
+        recent_events = thread.events[-keep_last_n:]
+        thread.events = [summary_event] + recent_events
+        logger.info("Thread has been summarized with LLM.", new_event_count=len(thread.events))
+
 
     async def select_tool(
         self,
@@ -305,6 +336,10 @@ class Agent(Generic[T]):
             "Starting agent loop",
             thread_id=thread.thread_id,
         )
+        
+        if self.config.max_events_before_summarization and len(thread.events) > self.config.max_events_before_summarization:
+            await self.summarize_thread_with_llm(thread)
+
         yield thread  # Yield initial state
 
         while True:

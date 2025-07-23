@@ -72,19 +72,19 @@ class Thread(BaseModel, Generic[T]):
         """Get a context value from the thread's metadata."""
         return self.metadata.get(key, default)
 
-    async def summarize_context(self, max_events: int = 10) -> None:
-        if len(self.events) <= max_events:
-            return
-        recent_events = self.events[-max_events:]
-        summary_event = Event(
-            type="context_summary",
-            data="Summary of earlier interactions: user initiated conversation, performed calculations.",
-        )
-        self.events = [summary_event] + recent_events
-        logger.info(
-            "Context summarized",
-            remaining_events=len(self.events),
-        )
+    def summarize_context(self, max_events: int = 10) -> None:
+        """
+        Reduces the number of events in the thread to max_events.
+
+        This is a simple truncation strategy. A more advanced implementation
+        could use an LLM to create a summary of the truncated events.
+        """
+        if len(self.events) > max_events:
+            self.events = self.events[-max_events:]
+            logger.info(
+                "Context summarized by truncation",
+                remaining_events=len(self.events),
+            )
 
     def validate(self) -> bool:
         if not self.events:
@@ -118,6 +118,16 @@ class Thread(BaseModel, Generic[T]):
             raise
 
     def add_event(self, type: str, data: Any, step: str = None) -> None:
-        """Add an event to the thread with the given type and data."""
+        """
+        Add an event to the thread.
+
+        Parameters:
+            type (str): The type of the event (e.g., 'user_input', 'llm_response', 'tool_call', 'tool_response').
+            data (Any): The event payload, which can be a dictionary or any serializable data relevant to the event.
+            step (str, optional): An optional label indicating the logical step or phase of the workflow this event represents (e.g., 'parse_customers', 'validate_domains'). Defaults to None.
+
+        Usage:
+            thread.add_event('tool_call', {'intent': 'add', 'arguments': {'a': 2, 'b': 3}}, step='addition')
+        """
         event = Event(type=type, step=step, data=data)
         self.events.append(event)
