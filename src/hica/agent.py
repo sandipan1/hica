@@ -5,7 +5,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from hica.core import Thread
 from hica.logging import logger
-from hica.memory import MemoryStore
 from hica.models import (
     ClarificationRequest,
     DoneForNow,
@@ -40,14 +39,12 @@ class Agent(Generic[T]):
         config: AgentConfig,
         tool_registry: Optional[ToolRegistry] = None,
         metadata: Optional[Dict[str, any]] = None,
-        memories: Optional[Dict[str, MemoryStore]] = None,
     ):
         self.config = config
         self.tool_registry = tool_registry or ToolRegistry()
         self.response_model: Type[BaseModel] = DynamicToolCall
         self.metadata = metadata or {}
         self._tool_metadata_cache: Optional[str] = None
-        self.memories = memories or {}
         logger.info(
             "Agent initialized", config=config.model_dump(), metadata=self.metadata
         )
@@ -142,31 +139,32 @@ class Agent(Generic[T]):
         """
         Summarizes the thread's events using an LLM, replacing older events with a summary.
         """
-        
+
         class ContextSummary(BaseModel):
-            summary: str = Field(..., description="A concise summary of the key facts, decisions, and outcomes from the conversation history.")
+            summary: str = Field(
+                ...,
+                description="A concise summary of the key facts, decisions, and outcomes from the conversation history.",
+            )
 
         summarization_prompt = "Summarize the key facts, decisions, and outcomes from the provided conversation history. Focus on information that will be relevant for future steps."
-        
+
         # We pass the thread to run_llm, but we will handle adding the event manually.
         response = await self.run_llm(
             prompt=summarization_prompt,
             thread=thread,
             response_model=ContextSummary,
-            add_event=False 
+            add_event=False,
         )
 
         # Create a summary event
-        summary_event = {
-            "type": "context_summary",
-            "data": response.summary
-        }
+        summary_event = {"type": "context_summary", "data": response.summary}
 
         # Keep the last N events and prepend the summary
         recent_events = thread.events[-keep_last_n:]
         thread.events = [summary_event] + recent_events
-        logger.info("Thread has been summarized with LLM.", new_event_count=len(thread.events))
-
+        logger.info(
+            "Thread has been summarized with LLM.", new_event_count=len(thread.events)
+        )
 
     async def select_tool(
         self,
@@ -336,8 +334,11 @@ class Agent(Generic[T]):
             "Starting agent loop",
             thread_id=thread.thread_id,
         )
-        
-        if self.config.max_events_before_summarization and len(thread.events) > self.config.max_events_before_summarization:
+
+        if (
+            self.config.max_events_before_summarization
+            and len(thread.events) > self.config.max_events_before_summarization
+        ):
             await self.summarize_thread_with_llm(thread)
 
         yield thread  # Yield initial state
