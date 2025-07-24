@@ -12,8 +12,8 @@ import time
 from example_tools import registry as calc_registry
 from rich import print
 
-from hica import Agent, AgentConfig, ThreadStore
-from hica.core import Event, Thread
+from hica import Agent, AgentConfig, ConversationMemoryStore
+from hica.core import Thread
 from hica.logging import get_thread_logger
 
 
@@ -30,27 +30,21 @@ async def main():
         config=config,
         tool_registry=calc_registry,
     )
-
-    thread = Thread(
-        events=[
-            Event(
-                type="user_input",
-                data="Calculate 355 minus 3 and then divide the result by 2.",
-            )
-        ],
+    thread = Thread()
+    thread.add_event(
+        type="user_input", data="Calculate 355 minus 3 and then divide the result by 2"
     )
 
-    store = ThreadStore()
-    thread_id = store.create(thread)
-    logger = get_thread_logger(thread_id)
+    store = ConversationMemoryStore()
+    logger = get_thread_logger(thread.thread_id)
     logger.info("Starting new agent process", user_input=thread.events[0].data)
 
-    print(f"--- Starting Agent (Thread ID: {thread_id}) ---")
+    print(f"--- Starting Agent (Thread ID: {thread.thread_id}) ---")
     start_time = time.time()
     last_event_count = 0
 
     async for intermediate_thread in agent.agent_loop(thread):
-        store.update(thread_id, intermediate_thread)
+        store.set(intermediate_thread)
         logger.debug(
             "Intermediate state saved",
             event_count=len(intermediate_thread.events),
@@ -65,7 +59,7 @@ async def main():
 
     logger.info("Agent process finished.")
     print("--- Agent Finished ---")
-    final_thread = store.get(thread_id)
+    final_thread = store.get(thread.thread_id)
     print("\n--- Final Thread State ---")
     print(final_thread.model_dump_json(indent=2))
 

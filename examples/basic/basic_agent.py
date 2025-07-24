@@ -34,7 +34,7 @@ async def main():
     store = ConversationMemoryStore(backend_type="file", context_dir="context")
     thread.add_event(
         type="user_input",
-        data="what is 2+3+4+4+2 . Use add tool ",
+        data="what is 2+3+4+4+2 .Use add tool ",
     )
     # Create a file-based MemoryStore to store the thread
     store.set(thread)
