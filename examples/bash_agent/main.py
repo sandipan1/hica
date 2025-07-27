@@ -4,10 +4,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from bash_tools import get_filesystem_subagent_tool
-
 from hica import Agent, AgentConfig, Thread, ToolRegistry
 from hica.memory import ConversationMemoryStore
+
+from .bash_tools import FileSystemTool
 
 
 async def main():
@@ -30,16 +30,18 @@ async def main():
     # The main agent's tool registry
     main_tool_registry = ToolRegistry()
 
-    # The sub-agent tool needs access to the main thread and memory
-    subagent_tool = get_filesystem_subagent_tool(main_thread, memory)
-    main_tool_registry.add_tool(subagent_tool.run_filesystem_task)
+    # Instantiate and register the sub-agent tool
+    filesystem_tool = FileSystemTool(memory=memory)
+    main_tool_registry.add_tool(filesystem_tool)
 
     # Configure and initialize the main agent
     main_agent_config = AgentConfig(
         model="openai/gpt-4.1-mini",
         system_prompt="You are a helpful assistant. You delegate bash command tasks to a specialized sub-agent.",
     )
-    main_agent = Agent(config=main_agent_config, tool_registry=main_tool_registry)
+    main_agent = Agent(
+        config=main_agent_config, tool_registry=main_tool_registry, memory=memory
+    )
 
     print("--- Starting Main Agent Loop ---")
 
@@ -47,9 +49,15 @@ async def main():
     async for thread_state in main_agent.agent_loop(thread=main_thread):
         memory.set(thread_state)  # Save state after each step
         last_event = thread_state.events[-1]
-        print(
-            f"Event: {last_event.type}, Step: {last_event.step}, Data: {last_event.data}"
-        )
+        if last_event.type == "llm_response":
+            print(f"Agent: {last_event.data.get('message', '...')}")
+        elif last_event.type == "tool_response":
+            display_content = last_event.data.get("display_content", "Tool executed.")
+            print(f"System: \n{display_content}")
+        else:
+            print(
+                f"Event: {last_event.type}, Step: {last_event.step}, Data: {last_event.data}"
+            )
         print("-" * 20)
 
     print("\n--- Main Agent Loop Finished ---")

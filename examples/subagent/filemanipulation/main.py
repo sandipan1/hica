@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from tools import get_filemanipulation_tool
+from tools import FileManipulationTool
 
 from hica import Agent, AgentConfig, Thread, ToolRegistry
 from hica.memory import ConversationMemoryStore
@@ -30,9 +30,9 @@ async def main():
     # The main agent's tool registry
     main_tool_registry = ToolRegistry()
 
-    # The sub-agent tool needs access to the main thread and memory
-    subagent_tool = get_filemanipulation_tool(main_thread, memory)
-    main_tool_registry.add_tool(subagent_tool.run_filemanipulation_task)
+    # Instantiate and register the new BaseTool
+    subagent_tool = FileManipulationTool(memory=memory)
+    main_tool_registry.add_tool(subagent_tool)
 
     # Configure and initialize the main agent
     main_agent_config = AgentConfig(
@@ -60,3 +60,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

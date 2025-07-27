@@ -2,7 +2,7 @@ import base64
 import json
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic.json_schema import SkipJsonSchema
 
 
@@ -105,17 +105,6 @@ class Event(BaseModel):
     class Config:
         exclude_none = True
 
-    # @computed_field
-    # @property
-    # def serialized_data(self) -> dict | str | float | int | list | None:
-    #     """
-    #     For tool_response events, returns the serialized/normalized data.
-    #     For other event types, returns data as-is.
-    #     """
-    #     if self.type == "tool_response":
-    #         return serialize_mcp_result(self.data)
-    #     return self.data
-
 
 class DynamicToolCall(BaseModel):
     """Represents a tool call with intent and arguments."""
@@ -131,3 +120,17 @@ class FinalResponse(BaseModel):
     message: str
     summary: Optional[str] = None
     raw_results: SkipJsonSchema[Optional[Dict[str, Any]]] = None
+
+
+class ToolResult(BaseModel):
+    """The structured result of a tool execution."""
+
+    llm_content: str = Field(
+        ..., description="The concise, factual content to be sent to the LLM."
+    )
+    display_content: Any = Field(
+        ..., description="The rich content to be displayed to the user."
+    )
+    raw_result: SkipJsonSchema[Optional[Any]] = Field(
+        None, description="The original raw result from the tool function."
+    )
