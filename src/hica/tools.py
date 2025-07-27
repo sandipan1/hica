@@ -1,11 +1,14 @@
 import asyncio
 import inspect
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
+import json
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
+from fastmcp import Client
 from pydantic import BaseModel, Field, create_model
 from pydantic_ai.tools import ToolDefinition
 
 from hica.logging import logger
+from hica.models import ToolResult, serialize_mcp_result
 
 
 def create_model_from_tool_schema(tool_def: ToolDefinition) -> Type[BaseModel]:
@@ -32,58 +35,50 @@ def create_model_from_tool_schema(tool_def: ToolDefinition) -> Type[BaseModel]:
     return create_model(model_name, __base__=BaseModel, **field_definitions)
 
 
-def _get_python_type_from_schema(schema: Dict[str, Any]) -> type:
-    """Convert JSON schema type to Python type."""
-    schema_type = schema.get("type")
+class BaseTool:
+    """Base class for all tools. Ensures a consistent interface for execution and metadata."""
 
-    if schema_type == "string":
-        return str
-    elif schema_type == "integer":
-        return int
-    elif schema_type == "number":
-        return float
-    elif schema_type == "boolean":
-        return bool
-    elif schema_type == "array":
-        items = schema.get("items", {})
-        item_type = _get_python_type_from_schema(items)
-        return List[item_type]
-    elif schema_type == "object":
-        if "properties" in schema:
-            # This is a nested object with defined properties
-            nested_model = create_model_from_nested_schema(schema)
-            return nested_model
-        else:
-            # This is a generic object
-            return Dict[str, Any]
-    else:
-        return Any
+    name: str
+    description: str
+
+    def get_confirmation_prompt(self, params: dict) -> str:
+        """Return a human-readable description of what this tool will do with these params."""
+        return f"Execute {self.name} with parameters: {params}?"
+
+    def should_confirm(self, params: dict) -> bool:
+        """Return True if this tool execution requires user confirmation."""
+        return False
+
+    async def execute(self, **kwargs) -> ToolResult:
+        """The core execution logic of the tool. Must return a ToolResult."""
+        raise NotImplementedError
 
 
-def create_model_from_nested_schema(schema: Dict[str, Any]) -> type[BaseModel]:
-    """Create a Pydantic model from a nested object schema."""
-    properties = schema.get("properties", {})
-    required = schema.get("required", [])
+def _create_wrapper_tool(func: Callable) -> BaseTool:
+    """Dynamically creates a BaseTool subclass that wraps a simple function."""
 
-    field_definitions = {}
-    for field_name, field_schema in properties.items():
-        field_type = _get_python_type_from_schema(field_schema)
-        is_required = field_name in required
+    class FunctionToolWrapper(BaseTool):
+        def __init__(self, wrapped_func: Callable):
+            self._wrapped_func = wrapped_func
+            self.name = wrapped_func.__name__
+            self.description = wrapped_func.__doc__ or ""
 
-        description = field_schema.get("description", "")
+        async def execute(self, **kwargs) -> ToolResult:
+            # Execute the original function (sync or async)
+            if asyncio.iscoroutinefunction(self._wrapped_func):
+                raw_result = await self._wrapped_func(**kwargs)
+            else:
+                raw_result = self._wrapped_func(**kwargs)
 
-        if is_required:
-            field_definitions[field_name] = (field_type, Field(description=description))
-        else:
-            field_definitions[field_name] = (
-                Optional[field_type],
-                Field(None, description=description),
+            # Wrap the simple result in a ToolResult object
+            str_result = str(raw_result)
+            return ToolResult(
+                llm_content=str_result,
+                display_content=str_result,
+                raw_result=raw_result,
             )
 
-    return create_model("NestedModel", **field_definitions)
-
-
-from fastmcp import Client
+    return FunctionToolWrapper(func)
 
 
 class MCPConnectionManager:
@@ -121,46 +116,40 @@ class MCPConnectionManager:
             raise RuntimeError("Not connected. Call connect() first.")
         return await self.client.list_tools()
 
-    async def list_resources(self):
-        """List all available resources on the MCP server"""
-        if not self.client.is_connected():
-            raise RuntimeError("Not connected. Call connect() first.")
-        return await self.client.list_resources()
-
-    async def read_resource(self, uri):
-        """Read a resource from the MCP server"""
-        if not self.client.is_connected():
-            raise RuntimeError("Not connected. Call connect() first.")
-        return await self.client.read_resource(uri)
-
-    async def ping(self):
-        """Ping the MCP server to verify connectivity"""
-        if not self.client.is_connected():
-            raise RuntimeError("Not connected. Call connect() first.")
-        return await self.client.ping()
-
-    def is_connected(self):
-        """Check if currently connected to the server"""
-        return self.client.is_connected()
-
 
 class ToolRegistry:
     def __init__(self):
-        self.local_tools: Dict[str, Callable] = {}
+        self.local_tools: Dict[str, BaseTool] = {}
         self.local_tool_defs: Dict[str, ToolDefinition] = {}
         self.mcp_tools: Dict[str, Tuple[MCPConnectionManager, ToolDefinition]] = {}
         self.all_tool_defs: Dict[str, ToolDefinition] = {}
 
-    def _register_local_tool(self, func: Callable, intent: Optional[str] = None):
-        """A private helper to register a local Python function as a tool."""
-        tool_intent = intent or func.__name__
+    def _register_local_tool(
+        self, tool: Union[Callable, BaseTool], intent: Optional[str] = None
+    ):
+        """A private helper to register a local Python function or a BaseTool instance."""
+        if callable(tool) and not isinstance(tool, BaseTool):
+            tool_instance = _create_wrapper_tool(tool)
+        elif isinstance(tool, BaseTool):
+            tool_instance = tool
+        else:
+            raise TypeError("Tool must be a callable or an instance of BaseTool")
+
+        tool_intent = intent or tool_instance.name
+        description = tool_instance.description
+        func_to_inspect = tool_instance.execute
+        name = tool_instance.name
+
         if tool_intent in self.local_tools:
             logger.warning(f"Tool '{tool_intent}' is already registered. Overwriting.")
 
-        signature = inspect.signature(func)
+        signature = inspect.signature(func_to_inspect)
+        params_to_process = list(signature.parameters.values())
+        if params_to_process and params_to_process[0].name == "self":
+            params_to_process.pop(0)
+
         properties = {}
         required = []
-
         type_map = {
             int: "integer",
             float: "number",
@@ -170,9 +159,9 @@ class ToolRegistry:
             dict: "object",
         }
 
-        for param_name, param in signature.parameters.items():
+        for param in params_to_process:
             param_type = param.annotation
-            json_type = "string"  # Default if type is not recognized
+            json_type = "string"
             if param_type in type_map:
                 json_type = type_map[param_type]
 
@@ -180,36 +169,46 @@ class ToolRegistry:
             if param.default != inspect.Parameter.empty:
                 param_schema["default"] = param.default
             else:
-                required.append(param_name)
+                required.append(param.name)
 
-            properties[param_name] = param_schema
+            properties[param.name] = param_schema
 
         tool_def = ToolDefinition(
-            name=func.__name__,
-            description=func.__doc__ or "",
+            name=name,
+            description=description,
             parameters_json_schema={
                 "type": "object",
                 "properties": properties,
                 "required": required,
             },
         )
-        self.local_tools[tool_intent] = func
+
+        self.local_tools[tool_intent] = tool_instance
         self.local_tool_defs[tool_intent] = tool_def
         self.all_tool_defs[tool_intent] = tool_def
         logger.info(f"Registered local tool: {tool_intent}")
 
     def tool(self, intent: Optional[str] = None):
-        """A decorator to register a Python function as a tool."""
+        """A decorator to register a Python function or a BaseTool subclass as a tool."""
 
-        def decorator(func: Callable):
-            self._register_local_tool(func, intent)
-            return func
+        def decorator(tool_item: Union[Callable, Type[BaseTool]]):
+            if inspect.isclass(tool_item) and issubclass(tool_item, BaseTool):
+                # Instantiate if it's a class
+                self.add_tool(tool_item(), intent)
+            elif callable(tool_item):
+                # Handle function
+                self.add_tool(tool_item, intent)
+            else:
+                raise TypeError(
+                    "The @tool decorator can only be used on functions or BaseTool subclasses."
+                )
+            return tool_item
 
         return decorator
 
-    def add_tool(self, func: Callable, intent: Optional[str] = None):
-        """Programmatically adds a local Python function as a tool."""
-        self._register_local_tool(func, intent)
+    def add_tool(self, tool: Union[Callable, BaseTool], intent: Optional[str] = None):
+        """Programmatically adds a local Python function or a BaseTool instance as a tool."""
+        self._register_local_tool(tool, intent)
 
     def remove_tool(self, name: str):
         """Removes a tool (local or MCP) from the registry by its name."""
@@ -247,18 +246,47 @@ class ToolRegistry:
                 f"Executing LOCAL tool: {name}",
                 extra={"tool_type": "local", "arguments": arguments},
             )
-            func = self.local_tools[name]
-            if asyncio.iscoroutinefunction(func):
-                return await func(**arguments)
-            else:
-                return func(**arguments)
+            tool = self.local_tools[name]
+            return await tool.execute(**arguments)
         elif name in self.mcp_tools:
             logger.info(
                 f"Executing MCP tool: {name}",
                 extra={"tool_type": "mcp", "arguments": arguments},
             )
             mcp_manager, _ = self.mcp_tools[name]
-            return await mcp_manager.call_tool(name, arguments)
+            # MCP tools might not return a ToolResult, so we wrap it for consistency
+            raw_result = await mcp_manager.call_tool(name, arguments)
+
+            llm_content_str = ""
+            display_content_str = ""
+
+            # Check if the result is a ToolResult-like object with structured content
+            if hasattr(raw_result, "structured_content") and raw_result.structured_content is not None:
+                # For the LLM, use the clean, structured data, serialized to a compact JSON string
+                llm_content_str = json.dumps(serialize_mcp_result(raw_result.structured_content))
+            
+            # For display, use the traditional content if available
+            if hasattr(raw_result, "content") and raw_result.content:
+                # Assuming content is a list of content blocks like TextContent
+                display_parts = []
+                for item in raw_result.content:
+                    if hasattr(item, "text"):
+                        display_parts.append(item.text)
+                display_content_str = " ".join(display_parts)
+
+            # Fallback for both if the above checks fail, maintaining old behavior
+            if not llm_content_str:
+                llm_content_str = str(serialize_mcp_result(raw_result))
+            if not display_content_str:
+                display_content_str = llm_content_str
+
+            return ToolResult(
+                llm_content=llm_content_str,
+                display_content=display_content_str,
+                raw_result=raw_result,
+            )
         else:
             logger.error(f"Tool {name} not found in registry.")
             raise ValueError(f"Tool {name} not found")
+
+

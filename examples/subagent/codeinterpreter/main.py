@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from tools import get_codeinterpreter_tool
+from tools import CodeInterpreterTool
 
 from hica import Agent, AgentConfig, Thread, ToolRegistry
 from hica.memory import ConversationMemoryStore
@@ -22,9 +22,9 @@ async def main():
     # The main agent's tool registry
     main_tool_registry = ToolRegistry()
 
-    # The sub-agent tool needs access to the main thread and memory
-    subagent_tool = get_codeinterpreter_tool(main_thread, memory)
-    main_tool_registry.add_tool(subagent_tool.run_code_interpreter)
+    # Instantiate and register the new BaseTool
+    code_interpreter_tool = CodeInterpreterTool(memory=memory)
+    main_tool_registry.add_tool(code_interpreter_tool)
 
     # Configure and initialize the main agent
     main_agent_config = AgentConfig(
@@ -58,11 +58,17 @@ async def main():
     sub_agent_thread_id = None
     for event in retrieved_main_thread.events:
         if (
-            event.type == "tool_call"
+            event.type == "tool_response"
             and isinstance(event.data, dict)
-            and "sub_agent_thread_id" in event.data
+            and "response" in event.data
+            and isinstance(event.data["response"], dict)
+            and "raw_result" in event.data["response"]
+            and isinstance(event.data["response"]["raw_result"], dict)
+            and "sub_agent_thread_id" in event.data["response"]["raw_result"]
         ):
-            sub_agent_thread_id = event.data["sub_agent_thread_id"]
+            sub_agent_thread_id = event.data["response"]["raw_result"][
+                "sub_agent_thread_id"
+            ]
             break
 
     if sub_agent_thread_id:
@@ -76,7 +82,7 @@ async def main():
         print(json.dumps(retrieved_sub_agent_thread.model_dump(), indent=2))
     else:
         print(
-            "Could not find a linked sub-agent thread in the main thread's tool_call event."
+            "Could not find a linked sub-agent thread in the main thread's tool_response event."
         )
 
 

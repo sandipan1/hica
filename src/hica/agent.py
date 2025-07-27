@@ -10,9 +10,10 @@ from hica.models import (
     DoneForNow,
     DynamicToolCall,
     FinalResponse,
+    ToolResult,
     serialize_mcp_result,
 )
-from hica.tools import ToolRegistry, create_model_from_tool_schema
+from hica.tools import BaseTool, ToolRegistry, create_model_from_tool_schema
 
 T = TypeVar("T")
 
@@ -106,10 +107,20 @@ class Agent(Generic[T]):
                             {"role": "assistant", "content": str(event.data)}
                         )
                 elif event.type == "tool_response":
+                    response_data = event.data.get("response", "")
+                    content_for_llm = ""
+                    if (
+                        isinstance(response_data, dict)
+                        and "llm_content" in response_data
+                    ):
+                        content_for_llm = response_data["llm_content"]
+                    else:
+                        content_for_llm = str(response_data)
+
                     messages.append(
                         {
                             "role": "user",
-                            "content": f"Tool execution result: {event.data}",
+                            "content": f"Tool execution result: {content_for_llm}",
                         }
                     )
 
@@ -321,7 +332,9 @@ class Agent(Generic[T]):
         return final_response
 
     async def agent_loop(
-        self, thread: Thread[T], context: Optional[str] = None
+        self,
+        thread: Thread[T],
+        context: Optional[str] = None,
     ) -> AsyncGenerator[Thread, None]:
         """
         Run the agent loop to process the thread until completion or clarification.
@@ -348,8 +361,6 @@ class Agent(Generic[T]):
             selection = await self.select_tool(
                 tools=None, thread=thread, context=context
             )
-            print(selection)
-            logger.info("Selected tool : ", selection)
             yield thread  # Yield after tool selection
 
             # Step 2: Handle terminal states
@@ -364,8 +375,30 @@ class Agent(Generic[T]):
                 yield thread
                 return  # End of loop
 
-            # Step 3: Fill parameters for the selected tool
-            arguments = await self.fill_parameters(selection.intent, thread)
+            # Step 2.5: Check for confirmation if it's a BaseTool
+            tool_to_execute = self.tool_registry.local_tools.get(selection.intent)
+            arguments = await self.fill_parameters(
+                selection.intent, thread, add_event=False
+            )
+
+            if isinstance(tool_to_execute, BaseTool) and tool_to_execute.should_confirm(
+                arguments
+            ):
+                confirmation_prompt = tool_to_execute.get_confirmation_prompt(
+                    arguments
+                )
+                thread.add_event(
+                    type="clarification",
+                    data={"message": confirmation_prompt, "intent": "clarification"},
+                )
+                logger.info(
+                    "Agent loop exiting: confirmation needed", prompt=confirmation_prompt
+                )
+                yield thread
+                return  # Pause the loop for user confirmation
+
+            # Step 3: Fill parameters for the selected tool (and log the event)
+            await self.fill_parameters(selection.intent, thread, add_event=True)
             yield thread  # Yield after params are filled and tool_call is formulated
 
             # Step 4: Execute the tool
@@ -442,13 +475,22 @@ class Agent(Generic[T]):
 
             # Execute tool using existing registry
             result = await self.tool_registry.execute_tool(tool_name, arguments)
-            result = serialize_mcp_result(result)
+
+            # Handle ToolResult or serialize other results
+            if isinstance(result, ToolResult):
+                serialized_result = {
+                    "llm_content": result.llm_content,
+                    "display_content": serialize_mcp_result(result.display_content),
+                    "raw_result": serialize_mcp_result(result.raw_result),
+                }
+            else:
+                serialized_result = serialize_mcp_result(result)
 
             # Log tool response event if requested
             if add_event and thread is not None:
                 thread.add_event(
                     type="tool_response",
-                    data={"response": result, "source": "ToolRegistry"},
+                    data={"response": serialized_result, "source": "ToolRegistry"},
                 )
 
             logger.info("Tool execution completed", tool=tool_name)

@@ -47,6 +47,7 @@ All steps are recorded as `Event` objects in a `Thread`, which can be saved, res
 ## 🌟 Core Principles
 
 - **Total Control:** Own every prompt, tool call, and context window.
+- **Structured Tool Output:** Tools return both human-readable content for display and clean, structured JSON for the LLM, ensuring reliable and efficient context.
 - **Action History & Transparent State:** Every action (user input, LLM call, tool call, tool response, clarification request) is recorded as an `Event` in a persistent `Thread`, providing a complete, auditable history for traceability and LLM planning.
 - **Observability:** Structured logging and stateful conversations for full transparency.
 - **Composable Tools:** Register both local Python functions and remote MCP tools in a unified registry.
@@ -384,54 +385,37 @@ HICA's event-sourced architecture makes it easy to build reliable, auditable, an
 
 ## 🧩 Elegant Tool Creation & Unified Tool Management
 
-HICA makes it seamless and robust to use both local Python functions and remote MCP tools:
+HICA provides a robust and flexible tooling architecture that supports both simple functions and advanced, class-based tools.
 
-- **Unified Tool Registration:**
-  - Register local tools with a simple decorator or method. HICA extracts tool properties (name, description, parameters) from the function signature and docstring.
-  - Register MCP tools automatically by fetching their schemas from the MCP server using the `MCPConnectionManager`.
-  - All tools (local and remote) are available in a single registry for the agent to use, with no code changes needed as your toolset evolves.
+- **Simple, Decorator-Based Tools:** For straightforward, stateless tools, you can use the simple `@registry.tool()` decorator on a Python function. HICA automatically infers the name, description, and parameters.
 
-- **MCPConnectionManager:**
-  - Handles connecting to MCP servers, fetching available tools, and executing remote tool calls.
-  - Makes it easy to add or remove remote tools at runtime, and keeps your agent in sync with remote tool definitions.
+- **Advanced, Class-Based Tools (`BaseTool`):** For complex, stateful tools that require more control, you can inherit from `hica.tools.BaseTool`. This allows you to:
+  - Implement custom logic for pre-execution safety checks (`should_confirm`).
+  - Provide dynamic, user-friendly descriptions of the tool's actions.
+  - Manage complex state or dependencies within the tool's own class structure.
 
-- **Parameter Validation & Type Safety:**
-  - Every tool call (local or MCP) is validated against a Pydantic model generated from the tool's schema.
-  - This ensures all arguments are type-checked before execution, reducing runtime errors and making debugging easier.
+- **Structured Tool Results (`ToolResult`):** All tools in HICA return a `ToolResult` object, which separates the clean, machine-readable data for the LLM (`llm_content`) from the rich, human-readable output for the user (`display_content`). This is a core feature that improves reliability and user experience.
 
-- **Automatic Tool Execution Handling:**
-  - HICA automatically determines whether to execute a tool locally or via MCP, based on the registry.
-  - Both sync and async local functions are supported.
+- **Unified MCP & Local Tools:** HICA seamlessly integrates local Python tools and remote MCP tools into a single registry. The agent can use any tool without needing to know where it's located, and HICA automatically handles parsing the structured content from MCP responses.
 
-**Example:**
+**Example: Advanced `BaseTool`**
 ```python
-from hica.tools import ToolRegistry, MCPConnectionManager
+from hica.tools import BaseTool, ToolResult
 
-registry = ToolRegistry()
-##local tool
 @registry.tool()
-def add(a: int, b: int) -> int:
-    "Add two numbers"
-    return a + b
+class DeleteFileTool(BaseTool):
+    name = "delete_file"
+    description = "Deletes a file from the filesystem. This action is permanent."
 
-## mcp server
-config = {
-    "mcpServers": {
-        "sqlite": {
-            "command": "uvx",
-            "args": ["mcp-server-sqlite", "--db-path", "db.sqlite"],
-        }
-    }
-}
-conn = MCPConnectionManager(config)
-# ... connect and load MCP tools ...
-async def setup():
-    await conn.connect()
-    await registry.load_mcp_tools(mcp_manager)
-    print(registry.get_tool_definitions())
-    await conn.disconnect()
-asyncio.run(setup())
-# Now both local and remote tools are available to the agent!
+    def should_confirm(self, params: dict) -> bool:
+        return True # Always ask the user for confirmation
+
+    async def execute(self, path: str) -> ToolResult:
+        # ... logic to delete the file ...
+        return ToolResult(
+            llm_content=f"The file at {path} was deleted.",
+            display_content=f"✅ **File Deleted:** `{path}`"
+        )
 ```
 
 ---

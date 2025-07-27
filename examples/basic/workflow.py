@@ -10,6 +10,7 @@ from pydantic import BaseModel, field_validator
 from hica import Agent, AgentConfig, ConversationMemoryStore
 from hica.core import Thread
 from hica.logging import get_thread_logger
+from hica.models import ToolResult
 from hica.tools import ToolRegistry
 
 load_dotenv()
@@ -30,7 +31,6 @@ async def main():
             "You are an autonomous agent. Reason carefully to select tools based on their name, description, and parameters. "
             "Analyze the user input, identify the required operation, and determine if clarification is needed."
         ),
-        context_format="json",
     )
 
     metadata = {"userid": "1234", "role": "analyst"}
@@ -69,15 +69,14 @@ async def main():
     ## use generate parameters for tools calls / user should give it
     ## tools are called sequentially.
     for query in response.queries:
-        thread.add_event(
-            type="parameters",
-            data={"intent": "search_paper", "arguments": {"query": query}},
+        # The tool call is now logged before execution by the agent
+        result: ToolResult = await agent.execute_tool(
+            "search_paper", {"query": query}, thread=thread
         )
 
-        res = await agent.execute_tool("search_paper", {"query": query}, thread=thread)
-
-        logger.info(f"tool reponse for query : {query} ", res)
+        logger.info(f"tool reponse for query : {query} ", result.raw_result)
     store.set(thread=thread)
 
 
 asyncio.run(main())
+
