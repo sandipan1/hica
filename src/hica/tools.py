@@ -56,27 +56,35 @@ class BaseTool:
 
 def _create_wrapper_tool(func: Callable) -> BaseTool:
     """Dynamically creates a BaseTool subclass that wraps a simple function."""
-
+    
+    # Get the original function's signature
+    original_sig = inspect.signature(func)
+    
     class FunctionToolWrapper(BaseTool):
         def __init__(self, wrapped_func: Callable):
             self._wrapped_func = wrapped_func
             self.name = wrapped_func.__name__
             self.description = wrapped_func.__doc__ or ""
+            
+            # Create an execute method with the same signature as the original function
+            async def execute_method(*args, **kwargs) -> ToolResult:
+                # Execute the original function (sync or async)
+                if asyncio.iscoroutinefunction(self._wrapped_func):
+                    raw_result = await self._wrapped_func(*args, **kwargs)
+                else:
+                    raw_result = self._wrapped_func(*args, **kwargs)
 
-        async def execute(self, **kwargs) -> ToolResult:
-            # Execute the original function (sync or async)
-            if asyncio.iscoroutinefunction(self._wrapped_func):
-                raw_result = await self._wrapped_func(**kwargs)
-            else:
-                raw_result = self._wrapped_func(**kwargs)
-
-            # Wrap the simple result in a ToolResult object
-            str_result = str(raw_result)
-            return ToolResult(
-                llm_content=str_result,
-                display_content=str_result,
-                raw_result=raw_result,
-            )
+                # Wrap the simple result in a ToolResult object
+                str_result = str(raw_result)
+                return ToolResult(
+                    llm_content=str_result,
+                    display_content=str_result,
+                    raw_result=raw_result,
+                )
+            
+            # Replace the execute method's signature with the original function's signature
+            execute_method.__signature__ = original_sig.replace(return_annotation=ToolResult)
+            self.execute = execute_method
 
     return FunctionToolWrapper(func)
 
