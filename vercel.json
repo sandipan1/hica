@@ -1,0 +1,7 @@
+{
+  "buildCommand": "cd docs && npm ci && npm run build",
+  "outputDirectory": "docs/dist",
+  "installCommand": "echo Using docs/package-lock.json && cd docs && npm ci",
+  "framework": "astro",
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD || echo 'changes'"
+}
