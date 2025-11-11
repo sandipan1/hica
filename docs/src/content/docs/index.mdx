@@ -1,40 +1,126 @@
 ---
-title: Welcome to Starlight
-description: Get started building your docs site with Starlight.
-template: splash # Remove or comment out this line to display the site sidebar on this page.
+title: HICA
+description: Build AI agents you can trust, trace, and control—every step, every decision.
+template: splash
 hero:
-  tagline: Congrats on setting up a new Starlight project!
+  tagline: Highly Customizable Agent Library - Build AI agents you can trust, trace, and control—every step, every decision.
   image:
     file: ../../assets/houston.webp
   actions:
-    - text: Example Guide
-      link: /guides/example/
+    - text: Get Started
+      link: /getting-started/
       icon: right-arrow
-    - text: Read the Starlight docs
-      link: https://starlight.astro.build
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/sandipan1/hica
       icon: external
       variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Next steps
+## What is HICA?
+
+**HICA** is a design principle put together in a framework for building customisable, deterministic AI agents. Unlike most frameworks, HICA gives you full control and visibility over every step of your agent's reasoning, tool use, and state.
+
+<div style="text-align: center; margin: 2rem 0;">
+  <img src="/excalidraw-animate.svg" alt="Agent Loop" style="max-width: 100%; height: auto;" />
+</div>
+
+## How HICA Works
+
+HICA agents operate in a **Thought → Action → Observation** loop:
+
+1. **Thought:** The LLM decides what to do next (call a tool, ask for clarification, or finish).
+2. **Action:** The agent executes a tool (local or remote) or asks the user for input.
+3. **Observation:** The agent records the result and reasons about the next step.
+
+All steps are recorded as `Event` objects in a `Thread`, which can be saved, resumed, and audited.
+
+<div style="text-align: center; margin: 2rem 0;">
+  <img src="/agent-workflow.png" alt="Agent Workflow" style="max-width: 100%; height: auto; border-radius: 8px;" />
+</div>
+
+## Core Features
 
 <CardGrid stagger>
-	<Card title="Update content" icon="pencil">
-		Edit `src/content/docs/index.mdx` to see this page change.
+	<Card title="Total Control" icon="setting">
+		Own every prompt, tool call, and context window. Customize prompts, context, and workflows for maximum control.
 	</Card>
-	<Card title="Change page layout" icon="document">
-		Delete `template: splash` in `src/content/docs/index.mdx` to display a
-		sidebar on this page.
+	<Card title="MCP First-Class Citizen" icon="puzzle">
+		Use any tool you like - MCP tools or local. Seamlessly integrate remote MCP tools alongside local Python tools.
 	</Card>
-	<Card title="Add new content" icon="add-document">
-		Add Markdown or MDX files to `src/content/docs` to create new pages.
+	<Card title="Human-in-the-Loop" icon="approve-check">
+		Native clarifications workflow for trustable agent interactions. Agents can request approvals at any step.
 	</Card>
-	<Card title="Configure your site" icon="setting">
-		Edit your `sidebar` and other config in `astro.config.mjs`.
+	<Card title="Structured Tool Output" icon="document">
+		Tools return both human-readable content for display and clean, structured JSON for the LLM.
 	</Card>
-	<Card title="Read the docs" icon="open-book">
-		Learn more in [the Starlight Docs](https://starlight.astro.build/).
+	<Card title="Observable & Auditable" icon="open-book">
+		Every action is recorded as an Event in a persistent Thread, providing complete traceability.
+	</Card>
+	<Card title="Stateful by Design" icon="laptop">
+		State is externalized and persisted outside the agent process for scalability and reliability.
+	</Card>
+</CardGrid>
+
+## Quick Start
+
+```python
+from hica.tools import ToolRegistry
+from hica.agent import Agent, AgentConfig
+from hica.core import Thread, Event
+
+# Register a tool
+registry = ToolRegistry()
+
+@registry.tool()
+def add(a: int, b: int) -> int:
+    "Add two numbers"
+    return a + b
+
+# Create an agent
+agent = Agent(
+    config=AgentConfig(model="gpt-4o-mini"),
+    tool_registry=registry
+)
+
+# Run the agent
+thread = Thread(events=[Event(type="user_input", data="What is 3 + 4?")])
+async for _ in agent.agent_loop(thread):
+    pass
+```
+
+## Why Choose HICA?
+
+<CardGrid stagger>
+	<Card title="Production-Ready" icon="rocket">
+		Designed for reliability, auditability, and extensibility—not just demos.
+	</Card>
+	<Card title="Unified Tooling" icon="puzzle">
+		Mix and match local Python and remote MCP tools in a single registry.
+	</Card>
+	<Card title="Transparent" icon="approve-check">
+		Every step is logged and persisted for debugging and compliance.
+	</Card>
+	<Card title="Open Source" icon="github">
+		Community-driven and vendor-neutral. Licensed under Apache 2.0.
+	</Card>
+</CardGrid>
+
+## Next Steps
+
+<CardGrid>
+	<Card title="Getting Started" icon="rocket">
+		[Install HICA](/getting-started/) and build your first agent in minutes.
+	</Card>
+	<Card title="Architecture" icon="laptop">
+		Learn about [threads, events, and the agent loop](/architecture/).
+	</Card>
+	<Card title="MCP Integration" icon="puzzle">
+		Explore [how to integrate remote MCP tools](/mcp/) alongside local tools.
+	</Card>
+	<Card title="Examples" icon="document">
+		Check out [practical examples](https://github.com/sandipan1/hica/tree/main/examples) on GitHub.
 	</Card>
 </CardGrid>
