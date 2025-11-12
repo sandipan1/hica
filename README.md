@@ -390,9 +390,9 @@ HICA provides a robust and flexible tooling architecture that supports both simp
 - **Simple, Decorator-Based Tools:** For straightforward, stateless tools, you can use the simple `@registry.tool()` decorator on a Python function. HICA automatically infers the name, description, and parameters.
 
 - **Advanced, Class-Based Tools (`BaseTool`):** For complex, stateful tools that require more control, you can inherit from `hica.tools.BaseTool`. This allows you to:
-  - Implement custom logic for pre-execution safety checks (`should_confirm`).
-  - Provide dynamic, user-friendly descriptions of the tool's actions.
+  - Return structured `ToolResult` objects with separate LLM and display content.
   - Manage complex state or dependencies within the tool's own class structure.
+  - Implement custom logic and error handling within the tool.
 
 - **Structured Tool Results (`ToolResult`):** All tools in HICA return a `ToolResult` object, which separates the clean, machine-readable data for the LLM (`llm_content`) from the rich, human-readable output for the user (`display_content`). This is a core feature that improves reliability and user experience.
 
@@ -401,21 +401,25 @@ HICA provides a robust and flexible tooling architecture that supports both simp
 **Example: Advanced `BaseTool`**
 ```python
 from hica.tools import BaseTool, ToolResult
+from pathlib import Path
 
 @registry.tool()
-class DeleteFileTool(BaseTool):
-    name = "delete_file"
-    description = "Deletes a file from the filesystem. This action is permanent."
-
-    def should_confirm(self, params: dict) -> bool:
-        return True # Always ask the user for confirmation
+class ReadFileTool(BaseTool):
+    name = "read_file"
+    description = "Reads the contents of a file from the filesystem."
 
     async def execute(self, path: str) -> ToolResult:
-        # ... logic to delete the file ...
-        return ToolResult(
-            llm_content=f"The file at {path} was deleted.",
-            display_content=f"✅ **File Deleted:** `{path}`"
-        )
+        try:
+            content = Path(path).read_text()
+            return ToolResult(
+                llm_content=content,
+                display_content=f"📄 **File Read:** `{path}` ({len(content)} characters)"
+            )
+        except FileNotFoundError:
+            return ToolResult(
+                llm_content=f"Error: File not found: {path}",
+                display_content=f"❌ **Error:** File `{path}` not found"
+            )
 ```
 
 ---

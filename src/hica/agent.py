@@ -13,7 +13,7 @@ from hica.models import (
     ToolResult,
     serialize_mcp_result,
 )
-from hica.tools import BaseTool, ToolRegistry, create_model_from_tool_schema
+from hica.tools import ToolRegistry, create_model_from_tool_schema
 
 T = TypeVar("T")
 
@@ -375,30 +375,8 @@ class Agent(Generic[T]):
                 yield thread
                 return  # End of loop
 
-            # Step 2.5: Check for confirmation if it's a BaseTool
-            tool_to_execute = self.tool_registry.local_tools.get(selection.intent)
-            arguments = await self.fill_parameters(
-                selection.intent, thread, add_event=False
-            )
-
-            if isinstance(tool_to_execute, BaseTool) and tool_to_execute.should_confirm(
-                arguments
-            ):
-                confirmation_prompt = tool_to_execute.get_confirmation_prompt(
-                    arguments
-                )
-                thread.add_event(
-                    type="clarification",
-                    data={"message": confirmation_prompt, "intent": "clarification"},
-                )
-                logger.info(
-                    "Agent loop exiting: confirmation needed", prompt=confirmation_prompt
-                )
-                yield thread
-                return  # Pause the loop for user confirmation
-
             # Step 3: Fill parameters for the selected tool (and log the event)
-            await self.fill_parameters(selection.intent, thread, add_event=True)
+            arguments = await self.fill_parameters(selection.intent, thread, add_event=True)
             yield thread  # Yield after params are filled and tool_call is formulated
 
             # Step 4: Execute the tool

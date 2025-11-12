@@ -41,14 +41,6 @@ class BaseTool:
     name: str
     description: str
 
-    def get_confirmation_prompt(self, params: dict) -> str:
-        """Return a human-readable description of what this tool will do with these params."""
-        return f"Execute {self.name} with parameters: {params}?"
-
-    def should_confirm(self, params: dict) -> bool:
-        """Return True if this tool execution requires user confirmation."""
-        return False
-
     async def execute(self, **kwargs) -> ToolResult:
         """The core execution logic of the tool. Must return a ToolResult."""
         raise NotImplementedError

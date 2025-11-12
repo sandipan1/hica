@@ -12,9 +12,8 @@ HICA is designed around a transparent, event-sourced workflow with three pillars
 
 1. Select intent (a tool name, `done`, or `clarification`).
 2. Fill parameters for the selected tool.
-3. If `BaseTool.should_confirm()` is true, emit a `clarification` and pause.
-4. Execute the tool and add a `tool_response` event.
-5. Repeat until `done`.
+3. Execute the tool and add a `tool_response` event.
+4. Repeat until `done`.
 
 ## Thread and events
 
